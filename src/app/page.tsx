@@ -4,7 +4,7 @@
 
 import { ChevronRight } from 'lucide-react';
 import Link from 'next/link';
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import Swal from 'sweetalert2';
 
 import {
@@ -15,22 +15,25 @@ import {
 import {
   clearAllFavorites,
   getAllFavorites,
+  getAllFollowings,
   getAllPlayRecords,
+  saveFollowing,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
 import { getDoubanCategories } from '@/lib/douban.client';
+import { computeUnwatchedEpisodes } from '@/lib/following';
 import { DoubanItem } from '@/lib/types';
 
 import CapsuleSwitch from '@/components/CapsuleSwitch';
 import ContinueWatching from '@/components/ContinueWatching';
+import { useNavigationLoading } from '@/components/NavigationLoadingProvider';
 import PageLayout from '@/components/PageLayout';
 import ScrollableRow from '@/components/ScrollableRow';
-import { useNavigationLoading } from '@/components/NavigationLoadingProvider';
 import { useSite } from '@/components/SiteProvider';
 import VideoCard from '@/components/VideoCard';
 
 function HomeClient() {
-  const [activeTab, setActiveTab] = useState<'home' | 'history' | 'favorites'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'history' | 'following' | 'favorites'>('home');
   const [hotMovies, setHotMovies] = useState<DoubanItem[]>([]);
   const [hotTvShows, setHotTvShows] = useState<DoubanItem[]>([]);
   const [hotVarietyShows, setHotVarietyShows] = useState<DoubanItem[]>([]);
@@ -82,6 +85,26 @@ function HomeClient() {
   };
 
   const [favoriteItems, setFavoriteItems] = useState<FavoriteItem[]>([]);
+  const [favoriteLoading, setFavoriteLoading] = useState(false);
+
+  type FollowingItem = {
+    id: string;
+    source: string;
+    title: string;
+    poster: string;
+    episodes: number;
+    watchedEpisodes: number;
+    unwatchedEpisodes: number;
+    source_name: string;
+    year: string;
+    search_title?: string;
+    save_time: number;
+  };
+
+  const [followingItems, setFollowingItems] = useState<FollowingItem[]>([]);
+  const [followingListLoading, setFollowingListLoading] = useState(false);
+  const [followingUpdatesLoading, setFollowingUpdatesLoading] = useState(false);
+  const latestPlayRecordsRef = useRef<Record<string, any>>({});
 
   useEffect(() => {
     const fetchRecommendData = async () => {
@@ -165,22 +188,152 @@ function HomeClient() {
     setFavoriteItems(sorted);
   };
 
-  // 当切换到收藏夹时加载收藏数据
+  const updateFollowingItems = async (
+    allFollowings: Record<string, any>,
+    providedPlayRecords?: Record<string, any>
+  ) => {
+    const allPlayRecords =
+      providedPlayRecords ?? latestPlayRecordsRef.current ?? (await getAllPlayRecords());
+    latestPlayRecordsRef.current = allPlayRecords;
+
+    const sorted = Object.entries(allFollowings)
+      .sort(([, a], [, b]) => (b.save_time || 0) - (a.save_time || 0))
+      .map(([key, item]) => {
+        const plusIndex = key.indexOf('+');
+        const source = key.slice(0, plusIndex);
+        const id = key.slice(plusIndex + 1);
+        const watchedEpisodes =
+          allPlayRecords[key]?.index ?? item.watched_episodes ?? 0;
+        const totalEpisodes =
+          item.total_episodes || allPlayRecords[key]?.total_episodes || 1;
+        const unwatchedEpisodes = computeUnwatchedEpisodes({
+          totalEpisodes,
+          watchedEpisodes,
+        });
+
+        return {
+          id,
+          source,
+          title: item.title,
+          poster: item.cover,
+          episodes: totalEpisodes,
+          watchedEpisodes,
+          unwatchedEpisodes,
+          source_name: item.source_name,
+          year: item.year && item.year !== 'unknown' ? item.year : '',
+          search_title: item.search_title && item.search_title !== item.title ? item.search_title : '',
+          save_time: item.save_time,
+        } as FollowingItem;
+      });
+    setFollowingItems(sorted);
+  };
+
+  const refreshFollowingRecords = async (
+    allFollowings?: Record<string, any>,
+    allPlayRecords?: Record<string, any>
+  ) => {
+    const followings = allFollowings ?? (await getAllFollowings());
+    const playRecords =
+      allPlayRecords ?? latestPlayRecordsRef.current ?? (await getAllPlayRecords());
+    latestPlayRecordsRef.current = playRecords;
+
+    for (const [key, item] of Object.entries(followings)) {
+      const plusIndex = key.indexOf('+');
+      if (plusIndex === -1) continue;
+
+      const source = key.slice(0, plusIndex);
+      const id = key.slice(plusIndex + 1);
+
+      try {
+        const response = await fetch(
+          `/api/detail?source=${encodeURIComponent(source)}&id=${encodeURIComponent(id)}`
+        );
+
+        if (!response.ok) {
+          throw new Error(`detail request failed: ${response.status}`);
+        }
+
+        const detail = await response.json();
+        const latestTotalEpisodes = Math.max(
+          1,
+          detail?.episodes?.length || item.total_episodes || 1
+        );
+        const watchedEpisodes =
+          playRecords[key]?.index ?? item.watched_episodes ?? 0;
+
+        await saveFollowing(source, id, {
+          ...item,
+          title: detail?.title || item.title,
+          cover: detail?.poster || item.cover,
+          source_name: detail?.source_name || item.source_name,
+          year: detail?.year || item.year,
+          total_episodes: latestTotalEpisodes,
+          watched_episodes: watchedEpisodes,
+          save_time: item.save_time || Date.now(),
+          search_title: item.search_title || detail?.title || item.title,
+        });
+      } catch (error) {
+        console.warn(`刷新追更记录失败: ${key}`, error);
+      }
+    }
+
+    const refreshedFollowings = await getAllFollowings();
+    await updateFollowingItems(refreshedFollowings, playRecords);
+  };
+
   useEffect(() => {
     if (activeTab !== 'favorites') return;
 
     const loadFavorites = async () => {
-      const allFavorites = await getAllFavorites();
-      await updateFavoriteItems(allFavorites);
+      setFavoriteLoading(true);
+      try {
+        const allFavorites = await getAllFavorites();
+        await updateFavoriteItems(allFavorites);
+      } finally {
+        setFavoriteLoading(false);
+      }
     };
 
     loadFavorites();
 
-    // 监听收藏更新事件
     const unsubscribe = subscribeToDataUpdates(
       'favoritesUpdated',
       (newFavorites: Record<string, any>) => {
         updateFavoriteItems(newFavorites);
+      }
+    );
+
+    return unsubscribe;
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'following') return;
+
+    const loadFollowings = async () => {
+      setFollowingListLoading(true);
+      setFollowingUpdatesLoading(true);
+      try {
+        const allFollowings = await getAllFollowings();
+        const allPlayRecords = await getAllPlayRecords();
+        latestPlayRecordsRef.current = allPlayRecords;
+
+        // 先展示本地追更数据，避免“全部追更”被更新请求阻塞
+        await updateFollowingItems(allFollowings, allPlayRecords);
+        setFollowingListLoading(false);
+
+        await refreshFollowingRecords(allFollowings, allPlayRecords);
+      } finally {
+        setFollowingListLoading(false);
+        setFollowingUpdatesLoading(false);
+      }
+    };
+
+    loadFollowings();
+
+    const unsubscribe = subscribeToDataUpdates(
+      'followingsUpdated',
+      (newFollowings: Record<string, any>) => {
+        updateFollowingItems(newFollowings, latestPlayRecordsRef.current);
       }
     );
 
@@ -200,14 +353,16 @@ function HomeClient() {
           <CapsuleSwitch
             options={simpleMode ? [
               { label: '历史', value: 'history' },
+              { label: '追更', value: 'following' },
               { label: '收藏夹', value: 'favorites' },
             ] : [
               { label: '首页', value: 'home' },
               { label: '历史', value: 'history' },
+              { label: '追更', value: 'following' },
               { label: '收藏夹', value: 'favorites' },
             ]}
             active={simpleMode && activeTab === 'home' ? 'history' : activeTab}
-            onChange={(value) => setActiveTab(value as 'home' | 'history' | 'favorites')}
+            onChange={(value) => setActiveTab(value as 'home' | 'history' | 'following' | 'favorites')}
           />
         </div>
 
@@ -215,6 +370,100 @@ function HomeClient() {
           {activeTab === 'history' ? (
             // 历史视图 - 显示所有播放记录的网格布局
             <ContinueWatching showAll={true} />
+          ) : activeTab === 'following' ? (
+            <section className='mb-8'>
+              <div className='mb-4'>
+                <h2 className='text-xl font-bold text-gray-800 dark:text-gray-200'>
+                  我的追更
+                </h2>
+              </div>
+
+              <div className='space-y-8'>
+                <div>
+                  <h3 className='mb-4 text-sm font-medium text-gray-600 dark:text-gray-300'>
+                    有新未观看集数
+                  </h3>
+                  {followingUpdatesLoading &&
+                  followingItems.filter((item) => item.unwatchedEpisodes > 0).length === 0 ? (
+                    <div className='flex justify-center py-8'>
+                      <div className='flex items-center gap-2 text-gray-500 dark:text-gray-400'>
+                        <div className='animate-spin rounded-full h-5 w-5 border-b-2 border-green-500'></div>
+                        <span className='text-sm'>加载中...</span>
+                      </div>
+                    </div>
+                  ) : followingItems.filter((item) => item.unwatchedEpisodes > 0).length > 0 ? (
+                    <div className='justify-start grid grid-cols-3 gap-x-2 gap-y-14 sm:gap-y-20 px-0 sm:px-2 sm:grid-cols-[repeat(auto-fill,_minmax(11rem,_1fr))] sm:gap-x-8'>
+                      {followingItems
+                        .filter((item) => item.unwatchedEpisodes > 0)
+                        .map((item) => (
+                          <div key={item.source + item.id} className='w-full'>
+                            <VideoCard
+                              id={item.id}
+                              title={item.title}
+                              poster={item.poster}
+                              year={item.year && item.year !== 'unknown' ? item.year : ''}
+                              source={item.source}
+                              source_name={item.source_name}
+                              episodes={item.episodes}
+                              currentEpisode={item.watchedEpisodes}
+                              from='playrecord'
+                              type={item.episodes > 1 ? 'tv' : ''}
+                            />
+                            <div className='mt-2 text-center text-xs font-medium text-red-500 dark:text-red-400'>
+                              还有 {item.unwatchedEpisodes} 集未看
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  ) : (
+                    <div className='text-center text-gray-500 py-6 dark:text-gray-400'>
+                      暂无新更新
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <h3 className='mb-4 text-sm font-medium text-gray-600 dark:text-gray-300'>
+                    全部追更
+                  </h3>
+                  {followingListLoading ? (
+                    <div className='flex justify-center py-8'>
+                      <div className='flex items-center gap-2 text-gray-500 dark:text-gray-400'>
+                        <div className='animate-spin rounded-full h-5 w-5 border-b-2 border-green-500'></div>
+                        <span className='text-sm'>加载中...</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className='justify-start grid grid-cols-3 gap-x-2 gap-y-14 sm:gap-y-20 px-0 sm:px-2 sm:grid-cols-[repeat(auto-fill,_minmax(11rem,_1fr))] sm:gap-x-8'>
+                      {followingItems.map((item) => (
+                        <div key={`${item.source}-${item.id}-all`} className='w-full'>
+                          <VideoCard
+                            id={item.id}
+                            title={item.title}
+                            poster={item.poster}
+                            year={item.year && item.year !== 'unknown' ? item.year : ''}
+                            source={item.source}
+                            source_name={item.source_name}
+                            episodes={item.episodes}
+                            currentEpisode={item.watchedEpisodes}
+                            from='playrecord'
+                            type={item.episodes > 1 ? 'tv' : ''}
+                          />
+                          <div className='mt-2 text-center text-xs text-gray-500 dark:text-gray-400'>
+                            已看 {item.watchedEpisodes}/{item.episodes}
+                          </div>
+                        </div>
+                      ))}
+                      {followingItems.length === 0 && (
+                        <div className='col-span-full text-center text-gray-500 py-8 dark:text-gray-400'>
+                          暂无追更内容
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
           ) : activeTab === 'favorites' ? (
             // 收藏夹视图
             <section className='mb-8'>
@@ -251,23 +500,32 @@ function HomeClient() {
                   </button>
                 )}
               </div>
-              <div className='justify-start grid grid-cols-3 gap-x-2 gap-y-14 sm:gap-y-20 px-0 sm:px-2 sm:grid-cols-[repeat(auto-fill,_minmax(11rem,_1fr))] sm:gap-x-8'>
-                {favoriteItems.map((item) => (
-                  <div key={item.id + item.source} className='w-full'>
-                    <VideoCard
-                      query={item.search_title}
-                      {...item}
-                      from='favorite'
-                      type={item.episodes > 1 ? 'tv' : ''}
-                    />
+              {favoriteLoading ? (
+                <div className='flex justify-center py-8'>
+                  <div className='flex items-center gap-2 text-gray-500 dark:text-gray-400'>
+                    <div className='animate-spin rounded-full h-5 w-5 border-b-2 border-green-500'></div>
+                    <span className='text-sm'>加载中...</span>
                   </div>
-                ))}
-                {favoriteItems.length === 0 && (
-                  <div className='col-span-full text-center text-gray-500 py-8 dark:text-gray-400'>
-                    暂无收藏内容
-                  </div>
-                )}
-              </div>
+                </div>
+              ) : (
+                <div className='justify-start grid grid-cols-3 gap-x-2 gap-y-14 sm:gap-y-20 px-0 sm:px-2 sm:grid-cols-[repeat(auto-fill,_minmax(11rem,_1fr))] sm:gap-x-8'>
+                  {favoriteItems.map((item) => (
+                    <div key={item.id + item.source} className='w-full'>
+                      <VideoCard
+                        query={item.search_title}
+                        {...item}
+                        from='favorite'
+                        type={item.episodes > 1 ? 'tv' : ''}
+                      />
+                    </div>
+                  ))}
+                  {favoriteItems.length === 0 && (
+                    <div className='col-span-full text-center text-gray-500 py-8 dark:text-gray-400'>
+                      暂无收藏内容
+                    </div>
+                  )}
+                </div>
+              )}
             </section>
           ) : (
             // 首页视图

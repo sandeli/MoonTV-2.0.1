@@ -3,7 +3,7 @@
 import { createClient, RedisClientType } from 'redis';
 
 import { AdminConfig } from './admin.types';
-import { Favorite, IStorage, PlayRecord, SkipConfig } from './types';
+import { Favorite, Following, IStorage, PlayRecord, SkipConfig } from './types';
 
 // 搜索历史最大条数
 const SEARCH_HISTORY_LIMIT = 20;
@@ -258,6 +258,51 @@ export abstract class BaseRedisStorage implements IStorage {
     await this.withRetry(() => this.client.del(this.favKey(userName, key)));
   }
 
+  // ---------- 追更 ----------
+  private folKey(user: string, key: string) {
+    return `u:${user}:fol:${key}`;
+  }
+
+  async getFollowing(userName: string, key: string): Promise<Following | null> {
+    const val = await this.withRetry(() =>
+      this.client.get(this.folKey(userName, key))
+    );
+    return val ? (JSON.parse(val) as Following) : null;
+  }
+
+  async setFollowing(
+    userName: string,
+    key: string,
+    following: Following
+  ): Promise<void> {
+    await this.withRetry(() =>
+      this.client.set(this.folKey(userName, key), JSON.stringify(following))
+    );
+  }
+
+  async getAllFollowings(
+    userName: string
+  ): Promise<Record<string, Following>> {
+    const pattern = `u:${userName}:fol:*`;
+    const keys: string[] = await this.withRetry(() => this.client.keys(pattern));
+    if (keys.length === 0) return {};
+    const values = await this.withRetry(() => this.client.mGet(keys));
+    const result: Record<string, Following> = {};
+    keys.forEach((fullKey: string, idx: number) => {
+      const raw = values[idx];
+      if (raw) {
+        const following = JSON.parse(raw) as Following;
+        const keyPart = ensureString(fullKey.replace(`u:${userName}:fol:`, ''));
+        result[keyPart] = following;
+      }
+    });
+    return result;
+  }
+
+  async deleteFollowing(userName: string, key: string): Promise<void> {
+    await this.withRetry(() => this.client.del(this.folKey(userName, key)));
+  }
+
   // ---------- 用户注册 / 登录 ----------
   private userPwdKey(user: string) {
     return `u:${user}:pwd`;
@@ -318,6 +363,15 @@ export abstract class BaseRedisStorage implements IStorage {
     );
     if (favoriteKeys.length > 0) {
       await this.withRetry(() => this.client.del(favoriteKeys));
+    }
+
+    // 删除追更
+    const followingPattern = `u:${userName}:fol:*`;
+    const followingKeys = await this.withRetry(() =>
+      this.client.keys(followingPattern)
+    );
+    if (followingKeys.length > 0) {
+      await this.withRetry(() => this.client.del(followingKeys));
     }
 
     // 删除跳过片头片尾配置

@@ -14,13 +14,16 @@ import {
 } from '@/lib/danmaku.client';
 import {
   deleteFavorite,
+  deleteFollowing,
   deletePlayRecord,
   deleteSkipConfig,
   generateStorageKey,
   getAllPlayRecords,
   getSkipConfig,
   isFavorited,
+  isFollowing,
   saveFavorite,
+  saveFollowing,
   savePlayRecord,
   saveSkipConfig,
   subscribeToDataUpdates,
@@ -69,6 +72,7 @@ function PlayPageClient() {
 
   // 收藏状态
   const [favorited, setFavorited] = useState(false);
+  const [following, setFollowing] = useState(false);
 
   // 添加下载弹窗状态
   const [showAddDownload, setShowAddDownload] = useState(false);
@@ -1630,6 +1634,60 @@ function PlayPageClient() {
     }
   };
 
+  useEffect(() => {
+    if (!currentSource || !currentId) return;
+
+    const refreshFollowingState = async () => {
+      const isFollow = await isFollowing(currentSource, currentId);
+      setFollowing(isFollow);
+    };
+
+    refreshFollowingState();
+
+    const unsubscribe = subscribeToDataUpdates(
+      'followingsUpdated',
+      (followings: Record<string, any>) => {
+        const key = generateStorageKey(currentSource, currentId);
+        setFollowing(!!followings[key]);
+      }
+    );
+
+    return unsubscribe;
+  }, [currentSource, currentId]);
+
+  const handleToggleFollowing = async () => {
+    if (
+      !videoTitleRef.current ||
+      !detailRef.current ||
+      !currentSourceRef.current ||
+      !currentIdRef.current
+    )
+      return;
+
+    try {
+      if (following) {
+        await deleteFollowing(currentSourceRef.current, currentIdRef.current);
+        setFollowing(false);
+      } else {
+        await saveFollowing(currentSourceRef.current, currentIdRef.current, {
+          title: videoTitleRef.current,
+          source_name: detailRef.current?.source_name || '',
+          year: detailRef.current?.year,
+          cover: detailRef.current?.poster || '',
+          total_episodes: detailRef.current?.episodes.length || 1,
+          watched_episodes: currentEpisodeIndexRef.current + 1,
+          save_time: Date.now(),
+          search_title: searchTitle,
+          source: currentSourceRef.current,
+          id: currentIdRef.current,
+        });
+        setFollowing(true);
+      }
+    } catch (err) {
+      console.error('切换追更失败:', err);
+    }
+  };
+
   // 动态加载播放器相关库，仅在客户端
   const artLibRef = useRef<any>(null);
   const hlsLibRef = useRef<any>(null);
@@ -2539,28 +2597,51 @@ function PlayPageClient() {
                 )}
                 {/* 豆瓣链接按钮 */}
                 {videoDoubanId !== 0 && (
-                  <a
-                    href={`https://movie.douban.com/subject/${videoDoubanId.toString()}`}
-                    target='_blank'
-                    rel='noopener noreferrer'
-                    className='ml-3 flex-shrink-0'
-                  >
-                    <div className='bg-green-500 text-white text-xs font-bold w-8 h-8 rounded-full flex items-center justify-center shadow-md hover:bg-green-600 hover:scale-[1.1] transition-all duration-300 ease-out'>
-                      <svg
-                        width='16'
-                        height='16'
-                        viewBox='0 0 24 24'
-                        fill='none'
-                        stroke='currentColor'
-                        strokeWidth='2'
-                        strokeLinecap='round'
-                        strokeLinejoin='round'
-                      >
-                        <path d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'></path>
-                        <path d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'></path>
-                      </svg>
-                    </div>
-                  </a>
+                  <div className='flex items-center'>
+                    <a
+                      href={`https://movie.douban.com/subject/${videoDoubanId.toString()}`}
+                      target='_blank'
+                      rel='noopener noreferrer'
+                      className='ml-3 flex-shrink-0'
+                    >
+                      <div className='bg-green-500 text-white text-xs font-bold w-8 h-8 rounded-full flex items-center justify-center shadow-md hover:bg-green-600 hover:scale-[1.1] transition-all duration-300 ease-out'>
+                        <svg
+                          width='16'
+                          height='16'
+                          viewBox='0 0 24 24'
+                          fill='none'
+                          stroke='currentColor'
+                          strokeWidth='2'
+                          strokeLinecap='round'
+                          strokeLinejoin='round'
+                        >
+                          <path d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'></path>
+                          <path d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'></path>
+                        </svg>
+                      </div>
+                    </a>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleToggleFollowing();
+                      }}
+                      className='ml-2 flex-shrink-0 hover:opacity-80 transition-opacity'
+                      title={following ? '取消追更' : '加入追更'}
+                      aria-label={following ? '取消追更' : '加入追更'}
+                    >
+                      <div className={`flex items-center justify-center w-8 h-8 rounded-full shadow-md transition-all duration-300 ease-out ${following ? 'bg-amber-500 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-amber-100 dark:hover:bg-gray-600'}`}>
+                        <svg
+                          viewBox='0 0 24 24'
+                          className='h-4 w-4'
+                          fill={following ? 'currentColor' : 'none'}
+                          stroke='currentColor'
+                          strokeWidth='2'
+                        >
+                          <path d='M12 2.75a.75.75 0 0 1 .75.75V11h7.5a.75.75 0 0 1 0 1.5h-7.5v7.5a.75.75 0 0 1-1.5 0v-7.5H4.25a.75.75 0 0 1 0-1.5h7.5V3.5a.75.75 0 0 1 .75-.75Z' />
+                        </svg>
+                      </div>
+                    </button>
+                  </div>
                 )}
               </h1>
 

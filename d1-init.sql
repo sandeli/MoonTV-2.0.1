@@ -51,6 +51,26 @@ CREATE TABLE IF NOT EXISTS favorites (
   FOREIGN KEY (user_id) REFERENCES users (id)
 );
 
+-- 创建追更表
+CREATE TABLE IF NOT EXISTS followings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  source_name TEXT NOT NULL,
+  year TEXT,
+  cover TEXT,
+  total_episodes INTEGER,
+  watched_episodes INTEGER,
+  save_time INTEGER,
+  search_title TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, source, video_id),
+  FOREIGN KEY (user_id) REFERENCES users (id)
+);
+
 -- 创建搜索历史表
 CREATE TABLE IF NOT EXISTS search_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,6 +112,7 @@ SELECT '📋 创建的数据库表:' as info;
 SELECT '  • users - 用户表' as table_info;
 SELECT '  • play_records - 播放记录表' as table_info;
 SELECT '  • favorites - 收藏表' as table_info;
+SELECT '  • followings - 追更表' as table_info;
 SELECT '  • search_history - 搜索历史表' as table_info;
 SELECT '  • skip_configs - 跳过片头片尾配置表' as table_info;
 SELECT '  • admin_config - 管理员配置表' as table_info;

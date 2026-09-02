@@ -25,6 +25,20 @@ export interface Favorite {
   search_title: string; // 搜索时使用的标题
 }
 
+// 追更数据结构
+export interface Following {
+  source_name: string;
+  total_episodes: number;
+  watched_episodes: number;
+  title: string;
+  year: string;
+  cover: string;
+  save_time: number;
+  search_title: string;
+  source?: string;
+  id?: string;
+}
+
 // 存储接口
 export interface IStorage {
   // 播放记录相关
@@ -42,6 +56,16 @@ export interface IStorage {
   setFavorite(userName: string, key: string, favorite: Favorite): Promise<void>;
   getAllFavorites(userName: string): Promise<{ [key: string]: Favorite }>;
   deleteFavorite(userName: string, key: string): Promise<void>;
+
+  // 追更相关
+  getFollowing(userName: string, key: string): Promise<Following | null>;
+  setFollowing(
+    userName: string,
+    key: string,
+    following: Following
+  ): Promise<void>;
+  getAllFollowings(userName: string): Promise<{ [key: string]: Following }>;
+  deleteFollowing(userName: string, key: string): Promise<void>;
 
   // 用户相关
   registerUser(userName: string, password: string): Promise<void>;

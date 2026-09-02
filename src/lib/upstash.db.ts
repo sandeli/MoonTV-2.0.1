@@ -3,7 +3,7 @@
 import { Redis } from '@upstash/redis';
 
 import { AdminConfig } from './admin.types';
-import { Favorite, IStorage, PlayRecord, SkipConfig } from './types';
+import { Favorite, Following, IStorage, PlayRecord, SkipConfig } from './types';
 
 // 搜索历史最大条数
 const SEARCH_HISTORY_LIMIT = 20;
@@ -165,6 +165,48 @@ export class UpstashRedisStorage implements IStorage {
     await withRetry(() => this.client.del(this.favKey(userName, key)));
   }
 
+  // ---------- 追更 ----------
+  private folKey(user: string, key: string) {
+    return `u:${user}:fol:${key}`;
+  }
+
+  async getFollowing(userName: string, key: string): Promise<Following | null> {
+    const val = await withRetry(() =>
+      this.client.get(this.folKey(userName, key))
+    );
+    return val ? (val as Following) : null;
+  }
+
+  async setFollowing(
+    userName: string,
+    key: string,
+    following: Following
+  ): Promise<void> {
+    await withRetry(() => this.client.set(this.folKey(userName, key), following));
+  }
+
+  async getAllFollowings(
+    userName: string
+  ): Promise<Record<string, Following>> {
+    const pattern = `u:${userName}:fol:*`;
+    const keys: string[] = await withRetry(() => this.client.keys(pattern));
+    if (keys.length === 0) return {};
+
+    const result: Record<string, Following> = {};
+    for (const fullKey of keys) {
+      const value = await withRetry(() => this.client.get(fullKey));
+      if (value) {
+        const keyPart = ensureString(fullKey.replace(`u:${userName}:fol:`, ''));
+        result[keyPart] = value as Following;
+      }
+    }
+    return result;
+  }
+
+  async deleteFollowing(userName: string, key: string): Promise<void> {
+    await withRetry(() => this.client.del(this.folKey(userName, key)));
+  }
+
   // ---------- 用户注册 / 登录 ----------
   private userPwdKey(user: string) {
     return `u:${user}:pwd`;
@@ -225,6 +267,15 @@ export class UpstashRedisStorage implements IStorage {
     );
     if (favoriteKeys.length > 0) {
       await withRetry(() => this.client.del(...favoriteKeys));
+    }
+
+    // 删除追更
+    const followingPattern = `u:${userName}:fol:*`;
+    const followingKeys = await withRetry(() =>
+      this.client.keys(followingPattern)
+    );
+    if (followingKeys.length > 0) {
+      await withRetry(() => this.client.del(...followingKeys));
     }
 
     // 删除跳过片头片尾配置

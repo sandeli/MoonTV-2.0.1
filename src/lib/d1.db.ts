@@ -1,7 +1,7 @@
 /* eslint-disable no-console, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
 import { AdminConfig } from './admin.types';
-import { Favorite, IStorage, PlayRecord, SkipConfig } from './types';
+import { Favorite, Following, IStorage, PlayRecord, SkipConfig } from './types';
 
 // 搜索历史最大条数
 const SEARCH_HISTORY_LIMIT = 20;
@@ -117,6 +117,11 @@ export class D1Storage implements IStorage {
 
     await this.db
       .prepare('DELETE FROM favorites WHERE user_id = ?')
+      .bind(userId)
+      .run();
+
+    await this.db
+      .prepare('DELETE FROM followings WHERE user_id = ?')
       .bind(userId)
       .run();
 
@@ -396,6 +401,127 @@ export class D1Storage implements IStorage {
       .run();
   }
 
+  // ---------- 追更 ----------
+  async getFollowing(userName: string, key: string): Promise<Following | null> {
+    const [source, videoId] = key.split('+');
+    if (!source || !videoId) {
+      return null;
+    }
+    const userId = await this.getUserId(userName);
+    if (!userId) return null;
+
+    const result = await this.db
+      .prepare(
+        'SELECT * FROM followings WHERE user_id = ? AND source = ? AND video_id = ?'
+      )
+      .bind(userId, source, videoId)
+      .first();
+
+    if (!result) return null;
+
+    return {
+      title: result.title as string,
+      source_name: result.source_name as string,
+      year: result.year as string,
+      cover: result.cover as string,
+      total_episodes: result.total_episodes as number,
+      watched_episodes: result.watched_episodes as number,
+      save_time: result.save_time as number,
+      search_title: result.search_title as string,
+    };
+  }
+
+  async setFollowing(
+    userName: string,
+    key: string,
+    following: Following
+  ): Promise<void> {
+    const [source, videoId] = key.split('+');
+    if (!source || !videoId) {
+      throw new Error('Invalid key format for following');
+    }
+    const userId = await this.ensureUser(userName);
+
+    await this.db
+      .prepare(
+        `
+        INSERT INTO followings
+        (user_id, source, video_id, title, source_name, year, cover, total_episodes, watched_episodes, save_time, search_title)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, source, video_id)
+        DO UPDATE SET
+          title = excluded.title,
+          source_name = excluded.source_name,
+          year = excluded.year,
+          cover = excluded.cover,
+          total_episodes = excluded.total_episodes,
+          watched_episodes = excluded.watched_episodes,
+          save_time = excluded.save_time,
+          search_title = excluded.search_title,
+          updated_at = CURRENT_TIMESTAMP
+      `
+      )
+      .bind(
+        userId,
+        source,
+        videoId,
+        following.title || '',
+        following.source_name || '',
+        following.year || '',
+        following.cover || '',
+        following.total_episodes ?? 0,
+        following.watched_episodes ?? 0,
+        following.save_time ?? Date.now(),
+        following.search_title || ''
+      )
+      .run();
+  }
+
+  async getAllFollowings(
+    userName: string
+  ): Promise<Record<string, Following>> {
+    const userId = await this.getUserId(userName);
+    if (!userId) return {};
+
+    const results = await this.db
+      .prepare('SELECT * FROM followings WHERE user_id = ?')
+      .bind(userId)
+      .all();
+
+    const followings: Record<string, Following> = {};
+    for (const result of results.results || []) {
+      const key = `${result.source}+${result.video_id}`;
+      followings[key] = {
+        title: result.title as string,
+        source_name: result.source_name as string,
+        year: result.year as string,
+        cover: result.cover as string,
+        total_episodes: result.total_episodes as number,
+        watched_episodes: result.watched_episodes as number,
+        save_time: result.save_time as number,
+        search_title: result.search_title as string,
+      };
+    }
+
+    return followings;
+  }
+
+  async deleteFollowing(userName: string, key: string): Promise<void> {
+    const [source, videoId] = key.split('+');
+    if (!source || !videoId) {
+      return;
+    }
+    const userId = await this.getUserId(userName);
+    if (!userId) return;
+
+    await this.db
+      .prepare(
+        'DELETE FROM followings WHERE user_id = ? AND source = ? AND video_id = ?'
+      )
+      .bind(userId, source, videoId)
+      .run();
+  }
+
   // ---------- 搜索历史 ----------
   async getSearchHistory(userName: string): Promise<string[]> {
     const userId = await this.getUserId(userName);
@@ -608,6 +734,7 @@ export class D1Storage implements IStorage {
     // 删除所有表的数据
     await this.db.prepare('DELETE FROM play_records').run();
     await this.db.prepare('DELETE FROM favorites').run();
+    await this.db.prepare('DELETE FROM followings').run();
     await this.db.prepare('DELETE FROM search_history').run();
     await this.db.prepare('DELETE FROM skip_configs').run();
     await this.db.prepare('DELETE FROM users').run();
