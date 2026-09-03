@@ -2636,7 +2636,7 @@ function PlayPageClient() {
                       </svg>
                     </a>
                   )}
-                  {videoDoubanId !== 0 && (
+                  {currentSource && currentId && (
                     <FollowingIconButton
                       following={following}
                       size={16}
