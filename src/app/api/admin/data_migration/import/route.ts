@@ -201,7 +201,7 @@ export async function POST(req: NextRequest) {
             await db.registerUser(username, String(user.password));
           }
 
-          // 导入播放记录（分批并行）
+          // 导入播放记录（优先使用 D1 批量导入，规避单次 invocation 的 subrequest 限制）
           if (user.playRecords) {
             const entries = Object.entries(user.playRecords);
             send({
@@ -210,20 +210,27 @@ export async function POST(req: NextRequest) {
               dataType: '播放记录',
               total: entries.length,
             });
-            await runInBatches(
-              entries,
-              BATCH_SIZE,
-              async ([key, record]) => {
-                await (db as any).storage.setPlayRecord(username, key, record);
-              },
-              (done) => {
-                sendProgress('播放记录', done, entries.length);
-              }
+            const batched = await db.batchImportPlayRecords(
+              username,
+              entries as Array<[string, any]>
             );
+            if (!batched) {
+              // 非 D1 存储：分批并行逐条写入
+              await runInBatches(
+                entries,
+                BATCH_SIZE,
+                async ([key, record]) => {
+                  await (db as any).storage.setPlayRecord(username, key, record);
+                },
+                (done) => {
+                  sendProgress('播放记录', done, entries.length);
+                }
+              );
+            }
             processedRecords += entries.length;
           }
 
-          // 导入收藏夹（分批并行）
+          // 导入收藏夹（优先使用 D1 批量导入）
           if (user.favorites) {
             const entries = Object.entries(user.favorites);
             send({
@@ -232,20 +239,26 @@ export async function POST(req: NextRequest) {
               dataType: '收藏夹',
               total: entries.length,
             });
-            await runInBatches(
-              entries,
-              BATCH_SIZE,
-              async ([key, favorite]) => {
-                await (db as any).storage.setFavorite(username, key, favorite);
-              },
-              (done) => {
-                sendProgress('收藏夹', done, entries.length);
-              }
+            const batched = await db.batchImportFavorites(
+              username,
+              entries as Array<[string, any]>
             );
+            if (!batched) {
+              await runInBatches(
+                entries,
+                BATCH_SIZE,
+                async ([key, favorite]) => {
+                  await (db as any).storage.setFavorite(username, key, favorite);
+                },
+                (done) => {
+                  sendProgress('收藏夹', done, entries.length);
+                }
+              );
+            }
             processedRecords += entries.length;
           }
 
-          // 导入追更（分批并行）
+          // 导入追更（优先使用 D1 批量导入）
           if (user.followings) {
             const entries = Object.entries(user.followings).filter(([key]) => {
               const [source, id] = key.split('+');
@@ -257,17 +270,23 @@ export async function POST(req: NextRequest) {
               dataType: '追更',
               total: entries.length,
             });
-            await runInBatches(
-              entries,
-              BATCH_SIZE,
-              async ([key, following]) => {
-                const [source, id] = key.split('+');
-                await db.saveFollowing(username, source, id, following as any);
-              },
-              (done) => {
-                sendProgress('追更', done, entries.length);
-              }
+            const batched = await db.batchImportFollowings(
+              username,
+              entries as Array<[string, any]>
             );
+            if (!batched) {
+              await runInBatches(
+                entries,
+                BATCH_SIZE,
+                async ([key, following]) => {
+                  const [source, id] = key.split('+');
+                  await db.saveFollowing(username, source, id, following as any);
+                },
+                (done) => {
+                  sendProgress('追更', done, entries.length);
+                }
+              );
+            }
             processedRecords += entries.length;
           }
 
@@ -279,12 +298,15 @@ export async function POST(req: NextRequest) {
               todayUpdated.date = new Date().toISOString().slice(0, 10);
             }
             send({ type: 'detail', message: `导入今日新更 (date=${todayUpdated.date})...`, dataType: '今日新更' });
-            await db.setTodayUpdated(username, todayUpdated);
+            const batched = await db.batchImportTodayUpdated(username, todayUpdated);
+            if (!batched) {
+              await db.setTodayUpdated(username, todayUpdated);
+            }
             processedRecords += 1;
             sendProgress('今日新更', 1, 1);
           }
 
-          // 导入搜索历史（list 操作需保持顺序，故串行）
+          // 导入搜索历史（优先使用 D1 批量导入；非 D1 的 list 操作需保持顺序，故串行）
           if (user.searchHistory && Array.isArray(user.searchHistory)) {
             const history = [...user.searchHistory];
             send({
@@ -293,16 +315,19 @@ export async function POST(req: NextRequest) {
               dataType: '搜索历史',
               total: history.length,
             });
-            let historyDone = 0;
-            for (const keyword of history.reverse()) { // 反转以保持顺序
-              await db.addSearchHistory(username, keyword);
-              historyDone++;
-              sendProgress('搜索历史', historyDone, history.length);
+            const batched = await db.batchImportSearchHistory(username, history);
+            if (!batched) {
+              let historyDone = 0;
+              for (const keyword of history.reverse()) { // 反转以保持顺序
+                await db.addSearchHistory(username, keyword);
+                historyDone++;
+                sendProgress('搜索历史', historyDone, history.length);
+              }
             }
             processedRecords += history.length;
           }
 
-          // 导入跳过片头片尾配置（分批并行）
+          // 导入跳过片头片尾配置（优先使用 D1 批量导入）
           if (user.skipConfigs) {
             const entries = Object.entries(user.skipConfigs).filter(([key]) => {
               const [source, id] = key.split('+');
@@ -314,17 +339,23 @@ export async function POST(req: NextRequest) {
               dataType: '跳过配置',
               total: entries.length,
             });
-            await runInBatches(
-              entries,
-              BATCH_SIZE,
-              async ([key, skipConfig]) => {
-                const [source, id] = key.split('+');
-                await db.setSkipConfig(username, source, id, skipConfig as any);
-              },
-              (done) => {
-                sendProgress('跳过配置', done, entries.length);
-              }
+            const batched = await db.batchImportSkipConfigs(
+              username,
+              entries as Array<[string, any]>
             );
+            if (!batched) {
+              await runInBatches(
+                entries,
+                BATCH_SIZE,
+                async ([key, skipConfig]) => {
+                  const [source, id] = key.split('+');
+                  await db.setSkipConfig(username, source, id, skipConfig as any);
+                },
+                (done) => {
+                  sendProgress('跳过配置', done, entries.length);
+                }
+              );
+            }
             processedRecords += entries.length;
           }
 

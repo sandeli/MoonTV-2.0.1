@@ -296,6 +296,75 @@ export class DbManager {
       throw new Error('存储类型不支持清空数据操作');
     }
   }
+
+  // ---------- 批量导入（数据迁移专用） ----------
+  // 仅 D1 存储实现了这些批量方法（借助 db.batch() 规避单次 Worker invocation
+  // 的 subrequest 限制）。其他存储类型返回 false，由调用方回退到逐条写入。
+  async batchImportPlayRecords(
+    username: string,
+    entries: Array<[string, PlayRecord]>
+  ): Promise<boolean> {
+    if (typeof (this.storage as any).batchImportPlayRecords === 'function') {
+      await (this.storage as any).batchImportPlayRecords(username, entries);
+      return true;
+    }
+    return false;
+  }
+
+  async batchImportFavorites(
+    username: string,
+    entries: Array<[string, Favorite]>
+  ): Promise<boolean> {
+    if (typeof (this.storage as any).batchImportFavorites === 'function') {
+      await (this.storage as any).batchImportFavorites(username, entries);
+      return true;
+    }
+    return false;
+  }
+
+  async batchImportFollowings(
+    username: string,
+    entries: Array<[string, Following]>
+  ): Promise<boolean> {
+    if (typeof (this.storage as any).batchImportFollowings === 'function') {
+      await (this.storage as any).batchImportFollowings(username, entries);
+      return true;
+    }
+    return false;
+  }
+
+  async batchImportSkipConfigs(
+    username: string,
+    entries: Array<[string, SkipConfig]>
+  ): Promise<boolean> {
+    if (typeof (this.storage as any).batchImportSkipConfigs === 'function') {
+      await (this.storage as any).batchImportSkipConfigs(username, entries);
+      return true;
+    }
+    return false;
+  }
+
+  async batchImportSearchHistory(
+    username: string,
+    keywords: string[]
+  ): Promise<boolean> {
+    if (typeof (this.storage as any).batchImportSearchHistory === 'function') {
+      await (this.storage as any).batchImportSearchHistory(username, keywords);
+      return true;
+    }
+    return false;
+  }
+
+  async batchImportTodayUpdated(
+    username: string,
+    record: TodayUpdatedRecord
+  ): Promise<boolean> {
+    if (typeof (this.storage as any).batchImportTodayUpdated === 'function') {
+      await (this.storage as any).batchImportTodayUpdated(username, record);
+      return true;
+    }
+    return false;
+  }
 }
 
 // 导出默认实例
