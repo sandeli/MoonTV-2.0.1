@@ -547,6 +547,19 @@ function HomeClient() {
       'followingsUpdated',
       (newFollowings: Record<string, any>) => {
         updateFollowingItems(newFollowings, latestPlayRecordsRef.current);
+
+        // 取消追更后，同步移除“今日新更”中对应的条目并持久化
+        const current = todayUpdatedRef.current;
+        if (current.length > 0) {
+          const kept = current.filter(
+            (item) => !!newFollowings[`${item.source}+${item.id}`]
+          );
+          if (kept.length !== current.length) {
+            todayUpdatedRef.current = kept;
+            setTodayUpdatedItems([...kept]);
+            persistTodayUpdated(kept);
+          }
+        }
       }
     );
 

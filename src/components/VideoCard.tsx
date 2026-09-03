@@ -19,8 +19,8 @@ import {
 import { SearchResult } from '@/lib/types';
 import { processImageUrl } from '@/lib/utils';
 
-import { ImagePlaceholder } from '@/components/ImagePlaceholder';
 import FollowingIcon from '@/components/FollowingIcon';
+import { ImagePlaceholder } from '@/components/ImagePlaceholder';
 import MobileActionSheet from '@/components/MobileActionSheet';
 import { useNavigationLoading } from '@/components/NavigationLoadingProvider';
 
@@ -430,7 +430,7 @@ export default function VideoCard({
 
         {(config.showHeart || config.showFollowButton || config.showCheckCircle) && (
           <div className='absolute bottom-3 inset-x-3 flex items-center justify-end opacity-0 translate-y-2 transition-all duration-300 ease-in-out group-hover:opacity-100 group-hover:translate-y-0 [gap:clamp(0px,4cqi,0.75rem)]'>
-            {config.showCheckCircle && (
+            {config.showCheckCircle && onDelete && (
               <Trash2
                 onClick={handleDeleteRecord}
                 size={20}
@@ -682,7 +682,7 @@ export default function VideoCard({
                     },
               ]
             : []),
-          ...(from === 'playrecord' && actualSource && actualId
+          ...(from === 'playrecord' && actualSource && actualId && onDelete
             ? [
                 {
                   id: 'delete-record',
