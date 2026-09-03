@@ -34,6 +34,7 @@ import { getRequestTimeout, getVideoResolutionFromM3u8 } from '@/lib/utils';
 import AddDownloadModal from '@/components/AddDownloadModal';
 import DanmakuSelector from '@/components/DanmakuSelector';
 import EpisodeSelector from '@/components/EpisodeSelector';
+import { FollowingIconButton } from '@/components/FollowingIcon';
 import { triggerGlobalError } from '@/components/GlobalErrorIndicator';
 import PageLayout from '@/components/PageLayout';
 
@@ -2576,73 +2577,78 @@ function PlayPageClient() {
                       `第 ${currentEpisodeIndex + 1} 集`}
                   </span>
                 )}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleToggleFavorite();
-                  }}
-                  className='ml-3 flex-shrink-0 hover:opacity-80 transition-opacity'
-                >
-                  <FavoriteIcon filled={favorited} />
-                </button>
-                {/* 下载按钮 */}
-                {videoUrl && (
+                <div className='ml-3 flex flex-shrink-0 items-center gap-3'>
                   <button
-                    onClick={() => setShowAddDownload(true)}
-                    className='ml-3 flex-shrink-0 bg-blue-500 text-white p-2 rounded-full hover:bg-blue-600 hover:scale-[1.1] transition-all duration-300 ease-out shadow-md'
-                    title='下载视频'
+                    type='button'
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleToggleFavorite();
+                    }}
+                    className={`flex h-8 w-8 items-center justify-center rounded-full shadow-md transition-all duration-300 ease-out hover:scale-[1.1] ${
+                      favorited
+                        ? 'bg-red-500 text-white hover:bg-red-600'
+                        : 'bg-gray-200 text-gray-600 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'
+                    }`}
+                    title={favorited ? '取消收藏' : '加入收藏'}
+                    aria-label={favorited ? '取消收藏' : '加入收藏'}
                   >
-                    <Download className='h-4 w-4' />
+                    <Heart
+                      className={`h-4 w-4 ${
+                        favorited
+                          ? 'fill-white stroke-white'
+                          : 'fill-transparent stroke-current stroke-[1.5]'
+                      }`}
+                    />
                   </button>
-                )}
-                {/* 豆瓣链接按钮 */}
-                {videoDoubanId !== 0 && (
-                  <div className='flex items-center'>
+                  {videoUrl && (
+                    <button
+                      type='button'
+                      onClick={() => setShowAddDownload(true)}
+                      className='flex h-8 w-8 items-center justify-center rounded-full bg-blue-500 text-white shadow-md transition-all duration-300 ease-out hover:scale-[1.1] hover:bg-blue-600'
+                      title='下载视频'
+                      aria-label='下载视频'
+                    >
+                      <Download className='h-4 w-4' />
+                    </button>
+                  )}
+                  {videoDoubanId !== 0 && (
                     <a
                       href={`https://movie.douban.com/subject/${videoDoubanId.toString()}`}
                       target='_blank'
                       rel='noopener noreferrer'
-                      className='ml-3 flex-shrink-0'
+                      className='flex h-8 w-8 items-center justify-center rounded-full bg-green-500 text-white shadow-md transition-all duration-300 ease-out hover:scale-[1.1] hover:bg-green-600'
+                      title='打开豆瓣页面'
+                      aria-label='打开豆瓣页面'
                     >
-                      <div className='bg-green-500 text-white text-xs font-bold w-8 h-8 rounded-full flex items-center justify-center shadow-md hover:bg-green-600 hover:scale-[1.1] transition-all duration-300 ease-out'>
-                        <svg
-                          width='16'
-                          height='16'
-                          viewBox='0 0 24 24'
-                          fill='none'
-                          stroke='currentColor'
-                          strokeWidth='2'
-                          strokeLinecap='round'
-                          strokeLinejoin='round'
-                        >
-                          <path d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'></path>
-                          <path d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'></path>
-                        </svg>
-                      </div>
+                      <svg
+                        width='16'
+                        height='16'
+                        viewBox='0 0 24 24'
+                        fill='none'
+                        stroke='currentColor'
+                        strokeWidth='2'
+                        strokeLinecap='round'
+                        strokeLinejoin='round'
+                        aria-hidden='true'
+                      >
+                        <path d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'></path>
+                        <path d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'></path>
+                      </svg>
                     </a>
-                    <button
+                  )}
+                  {videoDoubanId !== 0 && (
+                    <FollowingIconButton
+                      following={following}
+                      size={16}
+                      padding={8}
+                      theme='detail'
                       onClick={(e) => {
                         e.stopPropagation();
                         handleToggleFollowing();
                       }}
-                      className='ml-2 flex-shrink-0 hover:opacity-80 transition-opacity'
-                      title={following ? '取消追更' : '加入追更'}
-                      aria-label={following ? '取消追更' : '加入追更'}
-                    >
-                      <div className={`flex items-center justify-center w-8 h-8 rounded-full shadow-md transition-all duration-300 ease-out ${following ? 'bg-amber-500 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-amber-100 dark:hover:bg-gray-600'}`}>
-                        <svg
-                          viewBox='0 0 24 24'
-                          className='h-4 w-4'
-                          fill={following ? 'currentColor' : 'none'}
-                          stroke='currentColor'
-                          strokeWidth='2'
-                        >
-                          <path d='M12 2.75a.75.75 0 0 1 .75.75V11h7.5a.75.75 0 0 1 0 1.5h-7.5v7.5a.75.75 0 0 1-1.5 0v-7.5H4.25a.75.75 0 0 1 0-1.5h7.5V3.5a.75.75 0 0 1 .75-.75Z' />
-                        </svg>
-                      </div>
-                    </button>
-                  </div>
-                )}
+                    />
+                  )}
+                </div>
               </h1>
 
               {/* 关键信息行 */}
@@ -2698,31 +2704,6 @@ function PlayPageClient() {
     </PageLayout>
   );
 }
-
-// FavoriteIcon 组件
-const FavoriteIcon = ({ filled }: { filled: boolean }) => {
-  if (filled) {
-    return (
-      <svg
-        className='h-7 w-7'
-        viewBox='0 0 24 24'
-        xmlns='http://www.w3.org/2000/svg'
-      >
-        <path
-          d='M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z'
-          fill='#ef4444' /* Tailwind red-500 */
-          stroke='#ef4444'
-          strokeWidth='2'
-          strokeLinecap='round'
-          strokeLinejoin='round'
-        />
-      </svg>
-    );
-  }
-  return (
-    <Heart className='h-7 w-7 stroke-[1] text-gray-600 dark:text-gray-300' />
-  );
-};
 
 export default function PlayPage() {
   return (

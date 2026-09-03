@@ -20,6 +20,7 @@ import { SearchResult } from '@/lib/types';
 import { processImageUrl } from '@/lib/utils';
 
 import { ImagePlaceholder } from '@/components/ImagePlaceholder';
+import FollowingIcon from '@/components/FollowingIcon';
 import MobileActionSheet from '@/components/MobileActionSheet';
 import { useNavigationLoading } from '@/components/NavigationLoadingProvider';
 
@@ -345,7 +346,7 @@ export default function VideoCard({
   // 渲染
   return (
     <div
-      className="group relative w-full rounded-lg bg-transparent cursor-pointer transition-all duration-300 ease-in-out hover:scale-[1.05] hover:z-[500]"
+      className="group relative w-full rounded-lg bg-transparent cursor-pointer transition-all duration-300 ease-in-out hover:scale-[1.05] hover:z-[500] [container-type:inline-size]"
       style={{ userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none' }}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -428,19 +429,19 @@ export default function VideoCard({
           )}
 
         {(config.showHeart || config.showFollowButton || config.showCheckCircle) && (
-          <div className='absolute bottom-3 right-3 flex gap-3 opacity-0 translate-y-2 transition-all duration-300 ease-in-out group-hover:opacity-100 group-hover:translate-y-0'>
+          <div className='absolute bottom-3 inset-x-3 flex items-center justify-end opacity-0 translate-y-2 transition-all duration-300 ease-in-out group-hover:opacity-100 group-hover:translate-y-0 [gap:clamp(0px,4cqi,0.75rem)]'>
             {config.showCheckCircle && (
               <Trash2
                 onClick={handleDeleteRecord}
                 size={20}
-                className='text-white transition-all duration-300 ease-out hover:stroke-red-500 hover:scale-[1.1]'
+                className='flex-shrink-0 text-white transition-all duration-300 ease-out hover:stroke-red-500 hover:scale-[1.1]'
               />
             )}
             {config.showHeart && (
               <Heart
                 onClick={handleToggleFavorite}
                 size={20}
-                className={`transition-all duration-300 ease-out ${
+                className={`flex-shrink-0 transition-all duration-300 ease-out ${
                   favorited
                     ? 'fill-red-600 stroke-red-600'
                     : 'fill-transparent stroke-white hover:stroke-red-400'
@@ -449,24 +450,21 @@ export default function VideoCard({
             )}
             {config.showFollowButton && (
               <button
+                type='button'
                 onClick={handleToggleFollowing}
-                className={`flex items-center justify-center w-6 h-6 rounded-full shadow-md transition-all duration-300 ease-out hover:scale-[1.1] ${
-                  following
-                    ? 'bg-amber-500 text-white'
-                    : 'bg-gray-200/95 text-gray-700 hover:bg-amber-100'
-                }`}
+                className='flex-shrink-0 transition-all duration-300 ease-out hover:scale-[1.1]'
                 title={following ? '取消追更' : '加入追更'}
                 aria-label={following ? '取消追更' : '加入追更'}
               >
-                <svg
-                  viewBox='0 0 24 24'
-                  className='h-3.5 w-3.5'
-                  fill={following ? 'currentColor' : 'none'}
-                  stroke='currentColor'
-                  strokeWidth='2'
-                >
-                  <path d='M12 2.75a.75.75 0 0 1 .75.75V11h7.5a.75.75 0 0 1 0 1.5h-7.5v7.5a.75.75 0 0 1-1.5 0v-7.5H4.25a.75.75 0 0 1 0-1.5h7.5V3.5a.75.75 0 0 1 .75-.75Z' />
-                </svg>
+                <FollowingIcon
+                  filled={following}
+                  size={20}
+                  className={
+                    following
+                      ? 'text-amber-400'
+                      : 'text-white'
+                  }
+                />
               </button>
             )}
           </div>
@@ -671,14 +669,14 @@ export default function VideoCard({
                   ? {
                       id: 'unfollow',
                       label: '取消追更',
-                      icon: <Heart size={18} className="fill-amber-500 stroke-amber-500" />,
+                      icon: <FollowingIcon variant='remove' size={18} className='text-amber-500' />,
                       color: 'warning' as const,
                       onClick: (e?: React.MouseEvent) => handleToggleFollowing(e as React.MouseEvent),
                     }
                   : {
                       id: 'follow',
                       label: '加入追更',
-                      icon: <Heart size={18} className="fill-transparent stroke-amber-500" />,
+                      icon: <FollowingIcon variant='add' size={18} className='text-amber-500' />,
                       color: 'primary' as const,
                       onClick: (e?: React.MouseEvent) => handleToggleFollowing(e as React.MouseEvent),
                     },
