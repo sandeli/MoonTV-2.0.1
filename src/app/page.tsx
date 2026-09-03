@@ -18,7 +18,9 @@ import {
   getAllFavorites,
   getAllFollowings,
   getAllPlayRecords,
+  getTodayUpdated,
   refreshFollowingsStream,
+  saveTodayUpdated,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
 import { getDoubanCategories } from '@/lib/douban.client';
@@ -131,50 +133,25 @@ function HomeClient() {
     oldEpisodes: number;
     newEpisodes: number;
   };
-  // “今日新更”持久化：保留一天（跨天自动清空），再次刷新/刷新页面不丢失当天记录
-  const TODAY_UPDATED_KEY = 'moon_today_updated_items';
-  const getTodayStr = () => {
-    const d = new Date();
-    const m = `${d.getMonth() + 1}`.padStart(2, '0');
-    const day = `${d.getDate()}`.padStart(2, '0');
-    return `${d.getFullYear()}-${m}-${day}`;
-  };
-  const loadTodayUpdated = (): TodayUpdatedItem[] => {
-    try {
-      const raw = localStorage.getItem(TODAY_UPDATED_KEY);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      if (parsed?.date !== getTodayStr()) return []; // 跨天清空
-      return Array.isArray(parsed.items) ? parsed.items : [];
-    } catch {
-      return [];
-    }
-  };
-  const persistTodayUpdated = (items: TodayUpdatedItem[]) => {
-    try {
-      localStorage.setItem(
-        TODAY_UPDATED_KEY,
-        JSON.stringify({ date: getTodayStr(), items })
-      );
-    } catch {
-      // 忽略存储失败
-    }
-  };
   const [todayUpdatedItems, setTodayUpdatedItems] = useState<TodayUpdatedItem[]>(
     []
   );
   const todayUpdatedRef = useRef<TodayUpdatedItem[]>([]);
   // 记录“今日新更”列表当前所属日期，用于跨天时自动清空
-  const todayUpdatedDateRef = useRef(getTodayStr());
-
-  // 挂载时从 localStorage 恢复“今日新更”（仅客户端；跨天则自动清空）
-  useEffect(() => {
-    const items = loadTodayUpdated();
-    todayUpdatedRef.current = items;
-    setTodayUpdatedItems(items);
-    todayUpdatedDateRef.current = getTodayStr();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const todayUpdatedDateRef = useRef<string>('');
+  // 将“今日新更”列表持久化到服务端（保留一天、跟随账号跨设备）
+  const persistTodayUpdated = async (items: TodayUpdatedItem[]) => {
+    try {
+      const now = new Date();
+      const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(
+        2,
+        '0'
+      )}-${String(now.getDate()).padStart(2, '0')}`;
+      await saveTodayUpdated({ date, items });
+    } catch (err) {
+      console.error('持久化“今日新更”记录失败:', err);
+    }
+  };
   // 当前完整追更工作列表（随流式结果实时更新），供重试失败项时取最新数据
   const latestFollowingsRef = useRef<Record<string, any>>({});
   // 本次网页会话是否已自动刷新过追更（网页加载后仅第一次进入追更页自动刷新一次）
@@ -333,10 +310,12 @@ function HomeClient() {
     // 失败列表每轮清空；“今日新更”仅跨天清空，同一天内再次刷新保留当天记录
     refreshFailedRef.current = [];
     setRefreshFailedItems([]);
-    if (getTodayStr() !== todayUpdatedDateRef.current) {
-      todayUpdatedDateRef.current = getTodayStr();
+    const todayStr = new Date().toDateString();
+    if (todayStr !== todayUpdatedDateRef.current) {
+      todayUpdatedDateRef.current = todayStr;
       todayUpdatedRef.current = [];
       setTodayUpdatedItems([]);
+      // 跨天清空服务端“今日新更”记录
       persistTodayUpdated([]);
     }
 
@@ -418,6 +397,7 @@ function HomeClient() {
             todayUpdatedRef.current = [...todayUpdatedRef.current, entry];
           }
           setTodayUpdatedItems([...todayUpdatedRef.current]);
+          // 持久化到服务端（保留一天、跟随账号跨设备）
           persistTodayUpdated(todayUpdatedRef.current);
         }
         updateProgress({
@@ -524,6 +504,27 @@ function HomeClient() {
         const allFollowings = await getAllFollowings();
         const allPlayRecords = await getAllPlayRecords();
         latestPlayRecordsRef.current = allPlayRecords;
+
+        // 从服务端恢复“今日新更”记录（保留一天、跟随账号跨设备）
+        try {
+          const saved = await getTodayUpdated();
+          const todayStr = new Date().toDateString();
+          if (saved && saved.items && saved.items.length > 0) {
+            // 仅当服务端记录属于今天时才恢复，否则视为跨天自动清空
+            const savedDate = new Date(saved.date + 'T00:00:00');
+            const isToday =
+              savedDate.getFullYear() === new Date().getFullYear() &&
+              savedDate.getMonth() === new Date().getMonth() &&
+              savedDate.getDate() === new Date().getDate();
+            if (isToday) {
+              todayUpdatedDateRef.current = todayStr;
+              todayUpdatedRef.current = saved.items as TodayUpdatedItem[];
+              setTodayUpdatedItems([...todayUpdatedRef.current]);
+            }
+          }
+        } catch (err) {
+          console.error('恢复“今日新更”记录失败:', err);
+        }
 
         // 先展示本地追更数据，避免“全部追更”被更新请求阻塞
         await updateFollowingItems(allFollowings, allPlayRecords);

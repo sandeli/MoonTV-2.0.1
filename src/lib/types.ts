@@ -104,6 +104,13 @@ export interface IStorage {
   deleteSkipConfig(userName: string, source: string, id: string): Promise<void>;
   getAllSkipConfigs(userName: string): Promise<{ [key: string]: SkipConfig }>;
 
+  // “今日新更”相关（保留一天、跟随账号跨设备）
+  getTodayUpdated(userName: string): Promise<TodayUpdatedRecord | null>;
+  setTodayUpdated(
+    userName: string,
+    record: TodayUpdatedRecord
+  ): Promise<void>;
+
   // 数据清理
   clearAllData(): Promise<void>;
 }
@@ -144,6 +151,28 @@ export interface SkipConfig {
   enable: boolean; // 是否启用跳过片头片尾
   intro_time: number; // 片头时间（秒）
   outro_time: number; // 片尾时间（秒）
+}
+
+// “今日新更”条目数据结构（追更页当天检测到有新集数更新的影片）
+export interface TodayUpdatedItem {
+  source: string;
+  id: string;
+  title: string;
+  poster: string;
+  episodes: number;
+  watchedEpisodes: number;
+  unwatchedEpisodes: number;
+  source_name: string;
+  year: string;
+  save_time: number;
+  oldEpisodes: number;
+  newEpisodes: number;
+}
+
+// “今日新更”记录：按日期（YYYY-MM-DD）保存当天条目，跨天自动清空
+export interface TodayUpdatedRecord {
+  date: string; // YYYY-MM-DD
+  items: TodayUpdatedItem[];
 }
 
 // 弹幕数据结构

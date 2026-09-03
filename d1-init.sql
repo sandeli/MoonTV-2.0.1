@@ -96,6 +96,17 @@ CREATE TABLE IF NOT EXISTS skip_configs (
   FOREIGN KEY (user_id) REFERENCES users (id)
 );
 
+-- 创建“今日新更”记录表（每个用户一行，整份记录以 JSON 文本存储，保留一天、跨设备跟随账号）
+CREATE TABLE IF NOT EXISTS today_updated (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL UNIQUE,
+  date TEXT NOT NULL,
+  data TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users (id)
+);
+
 -- 创建管理员配置表
 CREATE TABLE IF NOT EXISTS admin_config (
   id INTEGER PRIMARY KEY DEFAULT 1,
@@ -115,6 +126,7 @@ SELECT '  • favorites - 收藏表' as table_info;
 SELECT '  • followings - 追更表' as table_info;
 SELECT '  • search_history - 搜索历史表' as table_info;
 SELECT '  • skip_configs - 跳过片头片尾配置表' as table_info;
+SELECT '  • today_updated - 今日新更记录表' as table_info;
 SELECT '  • admin_config - 管理员配置表' as table_info;
 SELECT '  • source_configs - 源配置表' as table_info;
 SELECT '  • custom_categories - 自定义分类表' as table_info;

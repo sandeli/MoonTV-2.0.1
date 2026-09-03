@@ -3,7 +3,14 @@
 import { Redis } from '@upstash/redis';
 
 import { AdminConfig } from './admin.types';
-import { Favorite, Following, IStorage, PlayRecord, SkipConfig } from './types';
+import {
+  Favorite,
+  Following,
+  IStorage,
+  PlayRecord,
+  SkipConfig,
+  TodayUpdatedRecord,
+} from './types';
 
 // 搜索历史最大条数
 const SEARCH_HISTORY_LIMIT = 20;
@@ -286,6 +293,9 @@ export class UpstashRedisStorage implements IStorage {
     if (skipConfigKeys.length > 0) {
       await withRetry(() => this.client.del(...skipConfigKeys));
     }
+
+    // 删除“今日新更”记录
+    await withRetry(() => this.client.del(this.todayUpdatedKey(userName)));
   }
 
   // ---------- 搜索历史 ----------
@@ -410,6 +420,29 @@ export class UpstashRedisStorage implements IStorage {
     });
 
     return configs;
+  }
+
+  // ---------- “今日新更” ----------
+  private todayUpdatedKey(user: string) {
+    return `u:${user}:today_updated`; // u:username:today_updated
+  }
+
+  async getTodayUpdated(
+    userName: string
+  ): Promise<TodayUpdatedRecord | null> {
+    const val = await withRetry(() =>
+      this.client.get(this.todayUpdatedKey(userName))
+    );
+    return val ? (val as TodayUpdatedRecord) : null;
+  }
+
+  async setTodayUpdated(
+    userName: string,
+    record: TodayUpdatedRecord
+  ): Promise<void> {
+    await withRetry(() =>
+      this.client.set(this.todayUpdatedKey(userName), record)
+    );
   }
 
   // 清空所有数据

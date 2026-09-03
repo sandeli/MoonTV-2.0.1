@@ -4,7 +4,14 @@ import { AdminConfig } from './admin.types';
 import { D1Storage } from './d1.db';
 import { KvrocksStorage } from './kvrocks.db';
 import { RedisStorage } from './redis.db';
-import { Favorite, Following, IStorage, PlayRecord, SkipConfig } from './types';
+import {
+  Favorite,
+  Following,
+  IStorage,
+  PlayRecord,
+  SkipConfig,
+  TodayUpdatedRecord,
+} from './types';
 import { UpstashRedisStorage } from './upstash.db';
 
 // storage type 常量: 'localstorage' | 'redis' | 'kvrocks' | 'upstash' | 'd1'，默认 'localstorage'
@@ -260,6 +267,25 @@ export class DbManager {
       return (this.storage as any).getAllSkipConfigs(userName);
     }
     return {};
+  }
+
+  // ---------- “今日新更” ----------
+  async getTodayUpdated(
+    userName: string
+  ): Promise<TodayUpdatedRecord | null> {
+    if (typeof (this.storage as any).getTodayUpdated === 'function') {
+      return (this.storage as any).getTodayUpdated(userName);
+    }
+    return null;
+  }
+
+  async setTodayUpdated(
+    userName: string,
+    record: TodayUpdatedRecord
+  ): Promise<void> {
+    if (typeof (this.storage as any).setTodayUpdated === 'function') {
+      await (this.storage as any).setTodayUpdated(userName, record);
+    }
   }
 
   // ---------- 数据清理 ----------

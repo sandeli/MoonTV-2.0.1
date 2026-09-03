@@ -15,7 +15,7 @@
  */
 
 import { getAuthInfoFromBrowserCookie } from './auth';
-import { Following, SkipConfig } from './types';
+import { Following, SkipConfig, TodayUpdatedRecord } from './types';
 
 // 全局错误触发函数
 function triggerGlobalError(message: string) {
@@ -66,6 +66,7 @@ interface UserCacheStore {
   followings?: CacheData<Record<string, Following>>;
   searchHistory?: CacheData<string[]>;
   skipConfigs?: CacheData<Record<string, SkipConfig>>;
+  todayUpdated?: CacheData<TodayUpdatedRecord | null>;
 }
 
 // ---- 常量 ----
@@ -367,6 +368,35 @@ class HybridCacheManager {
 
     const userCache = this.getUserCache(username);
     userCache.skipConfigs = this.createCacheData(data);
+    this.saveUserCache(username, userCache);
+  }
+
+  /**
+   * 获取缓存的“今日新更”记录
+   */
+  getCachedTodayUpdated(): TodayUpdatedRecord | null {
+    const username = this.getCurrentUsername();
+    if (!username) return null;
+
+    const userCache = this.getUserCache(username);
+    const cached = userCache.todayUpdated;
+
+    if (cached && this.isCacheValid(cached)) {
+      return cached.data;
+    }
+
+    return null;
+  }
+
+  /**
+   * 缓存“今日新更”记录
+   */
+  cacheTodayUpdated(data: TodayUpdatedRecord | null): void {
+    const username = this.getCurrentUsername();
+    if (!username) return;
+
+    const userCache = this.getUserCache(username);
+    userCache.todayUpdated = this.createCacheData(data);
     this.saveUserCache(username, userCache);
   }
 
@@ -1746,7 +1776,8 @@ export type CacheUpdateEvent =
   | 'favoritesUpdated'
   | 'followingsUpdated'
   | 'searchHistoryUpdated'
-  | 'skipConfigsUpdated';
+  | 'skipConfigsUpdated'
+  | 'todayUpdatedUpdated';
 
 /**
  * 用于 React 组件监听数据更新的事件监听器
@@ -2060,6 +2091,130 @@ export async function deleteSkipConfig(
   } catch (err) {
     console.error('删除跳过片头片尾配置失败:', err);
     triggerGlobalError('删除跳过片头片尾配置失败');
+    throw err;
+  }
+}
+
+// ---------------- “今日新更”相关 API ----------------
+
+// localStorage 模式下“今日新更”记录的存储 key
+const TODAY_UPDATED_KEY = 'moontv_today_updated';
+
+/**
+ * 获取“今日新更”记录。
+ * 数据库存储模式下使用混合缓存策略：优先返回缓存数据，后台异步同步最新数据。
+ * 服务器端渲染阶段返回 null。
+ */
+export async function getTodayUpdated(): Promise<TodayUpdatedRecord | null> {
+  // 服务器端渲染阶段直接返回空
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  // 数据库存储模式：使用混合缓存策略（包括 redis 和 upstash）
+  if (STORAGE_TYPE !== 'localstorage') {
+    // 优先从缓存获取数据
+    const cachedData = cacheManager.getCachedTodayUpdated();
+
+    if (cachedData !== null) {
+      // 返回缓存数据，同时后台异步更新
+      fetchFromApi<TodayUpdatedRecord | null>(`/api/today-updated`)
+        .then((freshData) => {
+          // 只有数据真正不同时才更新缓存
+          if (JSON.stringify(cachedData) !== JSON.stringify(freshData)) {
+            cacheManager.cacheTodayUpdated(freshData);
+            // 触发数据更新事件
+            window.dispatchEvent(
+              new CustomEvent('todayUpdatedUpdated', {
+                detail: freshData,
+              })
+            );
+          }
+        })
+        .catch((err) => {
+          console.warn('后台同步“今日新更”记录失败:', err);
+        });
+
+      return cachedData;
+    } else {
+      // 缓存为空，直接从 API 获取并缓存
+      try {
+        const freshData = await fetchFromApi<TodayUpdatedRecord | null>(
+          `/api/today-updated`
+        );
+        cacheManager.cacheTodayUpdated(freshData);
+        return freshData;
+      } catch (err) {
+        console.error('获取“今日新更”记录失败:', err);
+        triggerGlobalError('获取“今日新更”记录失败');
+        return null;
+      }
+    }
+  }
+
+  // localStorage 模式
+  try {
+    const raw = localStorage.getItem(TODAY_UPDATED_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as TodayUpdatedRecord;
+  } catch (err) {
+    console.error('读取“今日新更”记录失败:', err);
+    triggerGlobalError('读取“今日新更”记录失败');
+    return null;
+  }
+}
+
+/**
+ * 保存“今日新更”记录。
+ * 数据库存储模式下使用乐观更新：先更新缓存，再异步同步到数据库。
+ */
+export async function saveTodayUpdated(
+  record: TodayUpdatedRecord
+): Promise<void> {
+  // 数据库存储模式：乐观更新策略（包括 redis 和 upstash）
+  if (STORAGE_TYPE !== 'localstorage') {
+    // 立即更新缓存
+    cacheManager.cacheTodayUpdated(record);
+
+    // 触发立即更新事件
+    window.dispatchEvent(
+      new CustomEvent('todayUpdatedUpdated', {
+        detail: record,
+      })
+    );
+
+    // 异步同步到数据库
+    try {
+      await fetchWithAuth('/api/today-updated', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(record),
+      });
+    } catch (err) {
+      console.error('保存“今日新更”记录失败:', err);
+      triggerGlobalError('保存“今日新更”记录失败');
+    }
+    return;
+  }
+
+  // localStorage 模式
+  if (typeof window === 'undefined') {
+    console.warn('无法在服务端保存“今日新更”记录到 localStorage');
+    return;
+  }
+
+  try {
+    localStorage.setItem(TODAY_UPDATED_KEY, JSON.stringify(record));
+    window.dispatchEvent(
+      new CustomEvent('todayUpdatedUpdated', {
+        detail: record,
+      })
+    );
+  } catch (err) {
+    console.error('保存“今日新更”记录失败:', err);
+    triggerGlobalError('保存“今日新更”记录失败');
     throw err;
   }
 }

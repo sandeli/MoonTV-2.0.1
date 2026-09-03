@@ -1,7 +1,14 @@
 /* eslint-disable no-console, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
 import { AdminConfig } from './admin.types';
-import { Favorite, Following, IStorage, PlayRecord, SkipConfig } from './types';
+import {
+  Favorite,
+  Following,
+  IStorage,
+  PlayRecord,
+  SkipConfig,
+  TodayUpdatedRecord,
+} from './types';
 
 // 搜索历史最大条数
 const SEARCH_HISTORY_LIMIT = 20;
@@ -132,6 +139,11 @@ export class D1Storage implements IStorage {
 
     await this.db
       .prepare('DELETE FROM skip_configs WHERE user_id = ?')
+      .bind(userId)
+      .run();
+
+    await this.db
+      .prepare('DELETE FROM today_updated WHERE user_id = ?')
       .bind(userId)
       .run();
 
@@ -729,6 +741,52 @@ export class D1Storage implements IStorage {
     return configs;
   }
 
+  // ---------- “今日新更” ----------
+  // 说明：D1 使用 today_updated 表，每个用户一行，整份记录以 JSON 文本存储，
+  // 与 redis/upstash 的“固定 key 存 JSON”语义保持一致。
+  async getTodayUpdated(
+    userName: string
+  ): Promise<TodayUpdatedRecord | null> {
+    const userId = await this.getUserId(userName);
+    if (!userId) return null;
+
+    const result = await this.db
+      .prepare('SELECT data FROM today_updated WHERE user_id = ?')
+      .bind(userId)
+      .first();
+
+    if (!result || !result.data) return null;
+
+    try {
+      return JSON.parse(result.data as string) as TodayUpdatedRecord;
+    } catch (error) {
+      console.error('解析“今日新更”记录失败:', error);
+      return null;
+    }
+  }
+
+  async setTodayUpdated(
+    userName: string,
+    record: TodayUpdatedRecord
+  ): Promise<void> {
+    const userId = await this.ensureUser(userName);
+
+    await this.db
+      .prepare(
+        `
+        INSERT INTO today_updated (user_id, date, data, updated_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id)
+        DO UPDATE SET
+          date = excluded.date,
+          data = excluded.data,
+          updated_at = CURRENT_TIMESTAMP
+      `
+      )
+      .bind(userId, record.date, JSON.stringify(record))
+      .run();
+  }
+
   // 清空所有数据
   async clearAllData(): Promise<void> {
     // 删除所有表的数据
@@ -737,6 +795,7 @@ export class D1Storage implements IStorage {
     await this.db.prepare('DELETE FROM followings').run();
     await this.db.prepare('DELETE FROM search_history').run();
     await this.db.prepare('DELETE FROM skip_configs').run();
+    await this.db.prepare('DELETE FROM today_updated').run();
     await this.db.prepare('DELETE FROM users').run();
     await this.db.prepare('DELETE FROM admin_config').run();
   }
