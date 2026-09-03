@@ -719,7 +719,8 @@ function HomeClient() {
                   <h3 className='mb-4 text-sm font-medium text-gray-600 dark:text-gray-300'>
                     今日新更
                   </h3>
-                  {refreshProgress.running && todayUpdatedItems.length === 0 ? (
+                  {(followingUpdatesLoading || refreshProgress.running) &&
+                  todayUpdatedItems.length === 0 ? (
                     <div className='flex justify-center py-8'>
                       <div className='flex items-center gap-2 text-gray-500 dark:text-gray-400'>
                         <div className='animate-spin rounded-full h-5 w-5 border-b-2 border-green-500'></div>
