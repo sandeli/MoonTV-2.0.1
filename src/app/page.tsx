@@ -501,7 +501,8 @@ function HomeClient() {
       setFollowingListLoading(true);
       setFollowingUpdatesLoading(true);
       try {
-        // 进入追更页时以远端 /api/followings 为准，若与本地缓存不一致则用远端覆盖本地缓存
+        // 进入追更页时以远端 /api/followings 为准：若有本地缓存则先返回缓存用于立即展示，
+        // 后台再以远端覆盖本地缓存（若不一致）；若无缓存则阻塞拉取远端。
         const allFollowings = await getAllFollowings(true);
         const allPlayRecords = await getAllPlayRecords();
         latestPlayRecordsRef.current = allPlayRecords;
@@ -527,14 +528,16 @@ function HomeClient() {
           console.error('恢复“今日新更”记录失败:', err);
         }
 
-        // 先展示本地追更数据，避免“全部追更”被更新请求阻塞
+        // 先展示本地追更数据（缓存），避免“全部追更/有未观看”被更新请求阻塞而显示加载中
         await updateFollowingItems(allFollowings, allPlayRecords);
         setFollowingListLoading(false);
+        setFollowingUpdatesLoading(false);
 
-        // 网页加载后仅第一次进入追更页自动刷新一次，之后改为手动刷新
+        // 网页加载后仅第一次进入追更页自动刷新一次，之后改为手动刷新。
+        // 后台执行（不 await），让界面先展示缓存数据，刷新完成后通过事件/回调更新。
         if (!hasAutoRefreshedRef.current) {
           hasAutoRefreshedRef.current = true;
-          await refreshFollowingRecords(allFollowings, allPlayRecords);
+          refreshFollowingRecords(allFollowings, allPlayRecords);
         }
       } finally {
         setFollowingListLoading(false);

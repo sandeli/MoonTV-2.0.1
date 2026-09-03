@@ -1072,25 +1072,38 @@ export async function getAllFollowings(
   if (STORAGE_TYPE !== 'localstorage') {
     const cachedData = cacheManager.getCachedFollowings();
 
-    // 强制以远端为准：直接拉取远端数据，若与本地缓存不一致则用远端覆盖本地缓存
+    // 强制以远端为准：若有本地缓存则先返回缓存用于立即展示（避免显示加载中），
+    // 同时后台拉取远端数据，若与本地缓存不一致则用远端覆盖本地缓存并触发刷新；
+    // 若无本地缓存则阻塞拉取远端。
     if (forceRemote) {
+      if (cachedData) {
+        fetchFromApi<Record<string, Following>>(`/api/followings`)
+          .then((freshData) => {
+            if (JSON.stringify(cachedData) !== JSON.stringify(freshData)) {
+              cacheManager.cacheFollowings(freshData);
+              window.dispatchEvent(
+                new CustomEvent('followingsUpdated', {
+                  detail: freshData,
+                })
+              );
+            }
+          })
+          .catch((err) => {
+            console.warn('后台同步追更失败:', err);
+            triggerGlobalError('后台同步追更失败');
+          });
+        return cachedData;
+      }
       try {
         const freshData = await fetchFromApi<Record<string, Following>>(
           `/api/followings`
         );
-        if (JSON.stringify(cachedData) !== JSON.stringify(freshData)) {
-          cacheManager.cacheFollowings(freshData);
-          window.dispatchEvent(
-            new CustomEvent('followingsUpdated', {
-              detail: freshData,
-            })
-          );
-        }
+        cacheManager.cacheFollowings(freshData);
         return freshData;
       } catch (err) {
         console.error('获取追更失败:', err);
         triggerGlobalError('获取追更失败');
-        return cachedData ?? {};
+        return {};
       }
     }
 
