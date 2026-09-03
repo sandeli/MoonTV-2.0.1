@@ -138,6 +138,96 @@ const AlertModal = ({
   );
 };
 
+// 导入进度弹窗组件
+interface ImportLogItem {
+  text: string;
+  type: 'info' | 'success' | 'error';
+}
+
+interface ImportProgressModalProps {
+  isOpen: boolean;
+  percent: number;
+  currentMessage: string;
+  logs: ImportLogItem[];
+  isError: boolean;
+}
+
+const ImportProgressModal = ({
+  isOpen,
+  percent,
+  currentMessage,
+  logs,
+  isError,
+}: ImportProgressModalProps) => {
+  const logContainerRef = useRef<HTMLDivElement>(null);
+
+  // 自动滚动到底部
+  useEffect(() => {
+    if (logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [logs]);
+
+  if (!isOpen) return null;
+
+  return createPortal(
+    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-lg w-full border border-gray-200 dark:border-gray-700">
+        <div className="p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-red-50 dark:bg-red-900/20 flex items-center justify-center">
+              <Upload className="w-4 h-4 text-red-600 dark:text-red-400" />
+            </div>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              {isError ? '导入失败' : '正在导入数据'}
+            </h3>
+          </div>
+
+          {/* 进度条 */}
+          <div className="mb-4">
+            <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
+              <span className="truncate mr-2">{currentMessage}</span>
+              <span className="flex-shrink-0">{Math.round(percent)}%</span>
+            </div>
+            <div className="w-full h-2.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-300 ${isError ? 'bg-red-500' : 'bg-red-600'}`}
+                style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
+              ></div>
+            </div>
+          </div>
+
+          {/* 日志列表 */}
+          <div
+            ref={logContainerRef}
+            className="h-48 overflow-y-auto bg-gray-50 dark:bg-gray-900 rounded-lg p-3 text-xs font-mono space-y-1"
+          >
+            {logs.length === 0 ? (
+              <div className="text-gray-400 dark:text-gray-500">准备中...</div>
+            ) : (
+              logs.map((log, index) => (
+                <div
+                  key={index}
+                  className={
+                    log.type === 'error'
+                      ? 'text-red-600 dark:text-red-400'
+                      : log.type === 'success'
+                        ? 'text-green-600 dark:text-green-400'
+                        : 'text-gray-700 dark:text-gray-300'
+                  }
+                >
+                  {log.text}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+};
+
 const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
   const [exportPassword, setExportPassword] = useState('');
   const [importPassword, setImportPassword] = useState('');
@@ -161,12 +251,38 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // 导入进度状态
+  const [importProgress, setImportProgress] = useState({
+    isOpen: false,
+    percent: 0,
+    currentMessage: '准备导入...',
+    logs: [] as ImportLogItem[],
+    isError: false,
+  });
+
   const showAlert = (config: Omit<typeof alertModal, 'isOpen'>) => {
     setAlertModal({ ...config, isOpen: true });
   };
 
   const hideAlert = () => {
     setAlertModal(prev => ({ ...prev, isOpen: false }));
+  };
+
+  // 追加导入日志
+  const appendImportLog = (text: string, type: ImportLogItem['type'] = 'info') => {
+    setImportProgress(prev => ({
+      ...prev,
+      logs: [...prev.logs, { text, type }],
+    }));
+  };
+
+  // 更新导入进度
+  const updateImportProgress = (percent: number, currentMessage: string) => {
+    setImportProgress(prev => ({
+      ...prev,
+      percent,
+      currentMessage,
+    }));
   };
 
   // 导出数据
@@ -245,7 +361,7 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
     }
   };
 
-  // 导入数据
+  // 导入数据（SSE 流式读取进度）
   const handleImport = async () => {
     if (!selectedFile) {
       showAlert({
@@ -265,6 +381,15 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
       return;
     }
 
+    // 打开进度弹窗
+    setImportProgress({
+      isOpen: true,
+      percent: 0,
+      currentMessage: '准备导入...',
+      logs: [],
+      isError: false,
+    });
+
     try {
       setIsImporting(true);
 
@@ -277,49 +402,151 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
         body: formData,
       });
 
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.error || `导入失败: ${response.status}`);
+      // 如果返回的不是 SSE 流（如 JSON 错误），则按普通 JSON 处理
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('text/event-stream')) {
+        let errorMsg = `导入失败: ${response.status}`;
+        try {
+          const errData = await response.json();
+          errorMsg = errData.error || errorMsg;
+        } catch {
+          // 忽略解析错误
+        }
+        throw new Error(errorMsg);
       }
 
-      showAlert({
-        type: 'success',
-        title: '导入成功',
-        html: `
-          <div class="text-left">
-            <p><strong>导入完成！</strong></p>
-            <p class="mt-2">导入的用户数量: ${result.importedUsers}</p>
-            <p>备份时间: ${new Date(result.timestamp).toLocaleString('zh-CN')}</p>
-            <p>服务器版本: ${result.serverVersion || '未知版本'}</p>
-            <p class="mt-3 text-orange-600">请刷新页面以查看最新数据。</p>
-          </div>
-        `,
-        confirmText: '刷新页面',
-        showConfirm: true,
-        onConfirm: async () => {
-          // 清理状态
-          setSelectedFile(null);
-          setImportPassword('');
-          if (fileInputRef.current) {
-            fileInputRef.current.value = '';
+      if (!response.body) {
+        throw new Error('浏览器不支持流式读取');
+      }
+
+      // 读取 SSE 流
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let importResult: any = null;
+      let reading = true;
+
+      while (reading) {
+        const { done, value } = await reader.read();
+        if (done) {
+          reading = false;
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // 按空行分割 SSE 事件
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || ''; // 保留最后一个不完整的事件
+
+        for (const event of events) {
+          const dataLine = event.split('\n').find(line => line.startsWith('data:'));
+          if (!dataLine) continue;
+
+          const dataStr = dataLine.slice(5).trim();
+          if (!dataStr) continue;
+
+          let data: any;
+          try {
+            data = JSON.parse(dataStr);
+          } catch {
+            continue;
           }
 
-          // 刷新配置
-          if (onRefreshConfig) {
-            await onRefreshConfig();
+          switch (data.type) {
+            case 'stage':
+              updateImportProgress(data.percent ?? 0, data.message || '');
+              appendImportLog(data.message || '');
+              break;
+            case 'user':
+              // 仅更新当前消息，保留进度条百分比（user 事件不携带 percent）
+              setImportProgress(prev => ({
+                ...prev,
+                currentMessage: data.message || '',
+              }));
+              appendImportLog(data.message || '');
+              break;
+            case 'detail':
+              // 显示当前正在导入的具体内容（仅更新消息，保留进度条百分比不变，
+              // 避免用闭包中的旧 percent 覆盖实时进度导致进度条跳回 0）
+              setImportProgress(prev => ({
+                ...prev,
+                currentMessage: data.message || '',
+              }));
+              appendImportLog(data.message || '');
+              break;
+            case 'progress':
+              // 更新进度条（使用服务端计算的 percent）
+              if (typeof data.percent === 'number') {
+                updateImportProgress(data.percent, data.message || `${data.dataType || ''} ${data.done}/${data.total}`);
+              }
+              break;
+            case 'error':
+              setImportProgress(prev => ({
+                ...prev,
+                isError: true,
+                currentMessage: data.message || '导入失败',
+              }));
+              appendImportLog(`错误: ${data.message || '导入失败'}`, 'error');
+              throw new Error(data.message || '导入失败');
+            case 'done':
+              importResult = data;
+              updateImportProgress(100, '导入完成');
+              appendImportLog('导入完成', 'success');
+              break;
+            default:
+              break;
           }
+        }
+      }
 
-          // 刷新页面
-          window.location.reload();
-        },
-      });
+      // 流结束后，如果成功则显示成功弹窗
+      if (importResult) {
+        setImportProgress(prev => ({ ...prev, isOpen: false }));
+        showAlert({
+          type: 'success',
+          title: '导入成功',
+          html: `
+            <div class="text-left">
+              <p><strong>导入完成！</strong></p>
+              <p class="mt-2">导入的用户数量: ${importResult.importedUsers}</p>
+              <p>备份时间: ${new Date(importResult.timestamp).toLocaleString('zh-CN')}</p>
+              <p>服务器版本: ${importResult.serverVersion || '未知版本'}</p>
+              <p class="mt-3 text-orange-600">请刷新页面以查看最新数据。</p>
+            </div>
+          `,
+          confirmText: '刷新页面',
+          showConfirm: true,
+          onConfirm: async () => {
+            // 清理状态
+            setSelectedFile(null);
+            setImportPassword('');
+            if (fileInputRef.current) {
+              fileInputRef.current.value = '';
+            }
+
+            // 刷新配置
+            if (onRefreshConfig) {
+              await onRefreshConfig();
+            }
+
+            // 刷新页面
+            window.location.reload();
+          },
+        });
+      } else {
+        // 流结束但没有 done 事件（异常中断）
+        setImportProgress(prev => ({ ...prev, isError: true, currentMessage: '导入中断' }));
+        appendImportLog('导入中断，未收到完成信号', 'error');
+      }
     } catch (error) {
-      showAlert({
-        type: 'error',
-        title: '导入失败',
-        message: error instanceof Error ? error.message : '导入过程中发生错误',
-      });
+      // 错误时保持进度弹窗打开并显示错误，同时关闭导入状态
+      setImportProgress(prev => ({
+        ...prev,
+        isError: true,
+        currentMessage: error instanceof Error ? error.message : '导入过程中发生错误',
+      }));
+      appendImportLog(error instanceof Error ? error.message : '导入过程中发生错误', 'error');
     } finally {
       setIsImporting(false);
     }
@@ -501,6 +728,15 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
         onConfirm={alertModal.onConfirm}
         showConfirm={alertModal.showConfirm}
         timer={alertModal.timer}
+      />
+
+      {/* 导入进度弹窗 */}
+      <ImportProgressModal
+        isOpen={importProgress.isOpen}
+        percent={importProgress.percent}
+        currentMessage={importProgress.currentMessage}
+        logs={importProgress.logs}
+        isError={importProgress.isError}
       />
     </>
   );

@@ -63,26 +63,42 @@ export async function POST(req: NextRequest) {
     allUsers.push(process.env.USERNAME);
     allUsers = Array.from(new Set(allUsers));
 
-    // 为每个用户收集数据
+    // 为每个用户收集数据（并行读取各类型数据以提升导出速度）
     for (const username of allUsers) {
-      const userData = {
-        // 播放记录
-        playRecords: await db.getAllPlayRecords(username),
-        // 收藏夹
-        favorites: await db.getAllFavorites(username),
-        // 追更
-        followings: await db.getAllFollowings(username),
-        // 今日新更
-        todayUpdated: await db.getTodayUpdated(username),
-        // 搜索历史
-        searchHistory: await db.getSearchHistory(username),
-        // 跳过片头片尾配置
-        skipConfigs: await db.getAllSkipConfigs(username),
-        // 用户密码（通过验证空密码来检查用户是否存在，然后获取密码）
-        password: await getUserPassword(username)
-      };
+      const [
+        playRecords,
+        favorites,
+        followings,
+        todayUpdated,
+        searchHistory,
+        skipConfigs,
+        password
+      ] = await Promise.all([
+        db.getAllPlayRecords(username),
+        db.getAllFavorites(username),
+        db.getAllFollowings(username),
+        db.getTodayUpdated(username),
+        db.getSearchHistory(username),
+        db.getAllSkipConfigs(username),
+        getUserPassword(username)
+      ]);
 
-      exportData.data.userData[username] = userData;
+      exportData.data.userData[username] = {
+        // 播放记录
+        playRecords,
+        // 收藏夹
+        favorites,
+        // 追更
+        followings,
+        // 今日新更
+        todayUpdated,
+        // 搜索历史
+        searchHistory,
+        // 跳过片头片尾配置
+        skipConfigs,
+        // 用户密码
+        password
+      };
     }
 
     // 覆盖站长密码

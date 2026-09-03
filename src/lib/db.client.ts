@@ -1305,18 +1305,31 @@ export interface FollowingRefreshCallbacks {
  * 服务端通过 SSE 逐条推送成功获取的集数结果，本函数实时解析并：
  *  - 通过 onItemResult / onItemFailed 回调逐条通知调用方（用于实时更新 UI）；
  *  - 维护本地 refreshed 副本，最终返回刷新后的完整追更列表。
+ *
+ * @param followings 本次要刷新（发送给服务端）的追更子集。首次刷新时为完整列表，
+ *                   重试失败项时仅含失败项。
+ * @param callbacks 流式回调。
+ * @param fullFollowings 完整追更列表（可选）。当 followings 仅为子集（如重试失败项）时，
+ *                       传入完整列表作为本地副本/缓存/广播的基础，避免仅含子集的
+ *                       refreshed 覆盖掉完整追更缓存与 UI。
  */
 export async function refreshFollowingsStream(
   followings: Record<string, Following>,
-  callbacks?: FollowingRefreshCallbacks
+  callbacks?: FollowingRefreshCallbacks,
+  fullFollowings?: Record<string, Following>
 ): Promise<Record<string, Following>> {
   if (STORAGE_TYPE === 'localstorage') {
     // localstorage 模式无服务端，直接返回当前数据
     return followings || {};
   }
 
-  // 本地副本：逐条应用服务端返回的最新集数
-  const refreshed: Record<string, Following> = { ...followings };
+  // 本地副本：逐条应用服务端返回的最新集数。
+  // 以完整列表为基础（若提供），确保广播/缓存时不会丢失未参与本次刷新的条目。
+  const refreshed: Record<string, Following> = {
+    ...(fullFollowings && Object.keys(fullFollowings).length > 0
+      ? fullFollowings
+      : followings),
+  };
 
   try {
     const res = await fetchWithAuth('/api/followings/refresh', {

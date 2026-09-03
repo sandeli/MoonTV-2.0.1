@@ -350,7 +350,9 @@ function HomeClient() {
       updateFollowingItems(workingFollowings, playRecords);
     };
 
-    await refreshFollowingsStream(targetFollowings, {
+    await refreshFollowingsStream(
+      targetFollowings,
+      {
       // 仅在首次刷新时用服务端返回的总数校准（重试时保持 total 不变）
       onStart: (t) => {
         if (!isRetry && t) {
@@ -419,7 +421,12 @@ function HomeClient() {
         // 最终以服务端写回后的完整列表为准
         updateFollowingItems(workingFollowings, playRecords);
       },
-    });
+      },
+      // 传入完整工作列表作为广播/缓存基础：重试失败项时 targetFollowings 仅为子集，
+      // 若不传完整列表，refreshFollowingsStream 会用子集覆盖完整追更缓存与 UI，
+      // 导致“全部追更”只剩失败项。
+      workingFollowings
+    );
   };
 
   const refreshFollowingRecords = async (
