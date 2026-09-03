@@ -150,6 +150,12 @@ interface ImportProgressModalProps {
   currentMessage: string;
   logs: ImportLogItem[];
   isError: boolean;
+  // 弹窗标题（默认“正在导入数据”）
+  title?: string;
+  // 失败标题（默认“导入失败”）
+  errorTitle?: string;
+  // 图标类型：import 用红色上传图标，export 用蓝色下载图标
+  iconType?: 'import' | 'export';
 }
 
 const ImportProgressModal = ({
@@ -158,6 +164,9 @@ const ImportProgressModal = ({
   currentMessage,
   logs,
   isError,
+  title = '正在导入数据',
+  errorTitle = '导入失败',
+  iconType = 'import',
 }: ImportProgressModalProps) => {
   const logContainerRef = useRef<HTMLDivElement>(null);
 
@@ -170,16 +179,28 @@ const ImportProgressModal = ({
 
   if (!isOpen) return null;
 
+  const isExport = iconType === 'export';
+
   return createPortal(
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-lg w-full border border-gray-200 dark:border-gray-700">
         <div className="p-6">
           <div className="flex items-center gap-3 mb-4">
-            <div className="w-8 h-8 rounded-lg bg-red-50 dark:bg-red-900/20 flex items-center justify-center">
-              <Upload className="w-4 h-4 text-red-600 dark:text-red-400" />
+            <div
+              className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                isExport
+                  ? 'bg-blue-50 dark:bg-blue-900/20'
+                  : 'bg-red-50 dark:bg-red-900/20'
+              }`}
+            >
+              {isExport ? (
+                <Download className={`w-4 h-4 ${isExport ? 'text-blue-600 dark:text-blue-400' : ''}`} />
+              ) : (
+                <Upload className="w-4 h-4 text-red-600 dark:text-red-400" />
+              )}
             </div>
             <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              {isError ? '导入失败' : '正在导入数据'}
+              {isError ? errorTitle : title}
             </h3>
           </div>
 
@@ -191,7 +212,13 @@ const ImportProgressModal = ({
             </div>
             <div className="w-full h-2.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
               <div
-                className={`h-full rounded-full transition-all duration-300 ${isError ? 'bg-red-500' : 'bg-red-600'}`}
+                className={`h-full rounded-full transition-all duration-300 ${
+                  isError
+                    ? 'bg-red-500'
+                    : isExport
+                      ? 'bg-blue-600'
+                      : 'bg-red-600'
+                }`}
                 style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
               ></div>
             </div>
@@ -260,6 +287,15 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
     isError: false,
   });
 
+  // 导出进度状态
+  const [exportProgress, setExportProgress] = useState({
+    isOpen: false,
+    percent: 0,
+    currentMessage: '准备导出...',
+    logs: [] as ImportLogItem[],
+    isError: false,
+  });
+
   const showAlert = (config: Omit<typeof alertModal, 'isOpen'>) => {
     setAlertModal({ ...config, isOpen: true });
   };
@@ -285,7 +321,24 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
     }));
   };
 
-  // 导出数据
+  // 追加导出日志
+  const appendExportLog = (text: string, type: ImportLogItem['type'] = 'info') => {
+    setExportProgress(prev => ({
+      ...prev,
+      logs: [...prev.logs, { text, type }],
+    }));
+  };
+
+  // 更新导出进度
+  const updateExportProgress = (percent: number, currentMessage: string) => {
+    setExportProgress(prev => ({
+      ...prev,
+      percent,
+      currentMessage,
+    }));
+  };
+
+  // 导出数据（SSE 流式响应，实时显示导出进度）
   const handleExport = async () => {
     if (!exportPassword.trim()) {
       showAlert({
@@ -295,6 +348,15 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
       });
       return;
     }
+
+    // 打开导出进度弹窗
+    setExportProgress({
+      isOpen: true,
+      percent: 0,
+      currentMessage: '准备导出...',
+      logs: [],
+      isError: false,
+    });
 
     try {
       setIsExporting(true);
@@ -309,45 +371,156 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
         }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `导出失败: ${response.status}`);
+      // 如果返回的不是 SSE 流（如 JSON 错误），则按普通 JSON 处理
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('text/event-stream')) {
+        let errorMsg = `导出失败: ${response.status}`;
+        try {
+          const errData = await response.json();
+          errorMsg = errData.error || errorMsg;
+        } catch {
+          // 忽略解析错误
+        }
+        throw new Error(errorMsg);
       }
 
-      // 获取文件名
-      const contentDisposition = response.headers.get('content-disposition');
-      const filenameMatch = contentDisposition?.match(/filename="(.+)"/);
-      const filename = filenameMatch?.[1] || 'moontv-backup.dat';
+      if (!response.body) {
+        throw new Error('浏览器不支持流式读取');
+      }
 
-      // 下载文件
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.style.display = 'none';
-      a.style.position = 'fixed';
-      a.style.top = '0';
-      a.style.left = '0';
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
+      // 读取 SSE 流
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let filename = 'moontv-backup.dat';
+      let fileData = '';
+      let exportDone = false;
+      let reading = true;
 
-      showAlert({
-        type: 'success',
-        title: '导出成功',
-        message: '数据已成功导出，请妥善保管备份文件和密码',
-        timer: 3000,
-      });
+      while (reading) {
+        const { done, value } = await reader.read();
+        if (done) {
+          reading = false;
+          break;
+        }
 
-      setExportPassword('');
+        buffer += decoder.decode(value, { stream: true });
+
+        // 按空行分割 SSE 事件
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || ''; // 保留最后一个不完整的事件
+
+        for (const event of events) {
+          const dataLine = event.split('\n').find(line => line.startsWith('data:'));
+          if (!dataLine) continue;
+
+          const dataStr = dataLine.slice(5).trim();
+          if (!dataStr) continue;
+
+          let data: any;
+          try {
+            data = JSON.parse(dataStr);
+          } catch {
+            continue;
+          }
+
+          switch (data.type) {
+            case 'stage':
+              updateExportProgress(data.percent ?? 0, data.message || '');
+              appendExportLog(data.message || '');
+              break;
+            case 'user':
+              // 更新进度条（user 事件携带 percent），并显示当前用户
+              if (typeof data.percent === 'number') {
+                updateExportProgress(data.percent, data.message || '');
+              } else {
+                setExportProgress(prev => ({
+                  ...prev,
+                  currentMessage: data.message || '',
+                }));
+              }
+              appendExportLog(data.message || '');
+              break;
+            case 'detail':
+              // 仅更新消息，保留进度条百分比
+              setExportProgress(prev => ({
+                ...prev,
+                currentMessage: data.message || '',
+              }));
+              appendExportLog(data.message || '');
+              break;
+            case 'file_start':
+              filename = data.filename || filename;
+              updateExportProgress(data.percent ?? 95, '正在生成备份文件...');
+              appendExportLog(`生成备份文件: ${filename}`);
+              break;
+            case 'chunk':
+              // 拼接加密数据分块
+              fileData += data.data || '';
+              break;
+            case 'file_end':
+              updateExportProgress(data.percent ?? 100, '文件生成完成，准备下载...');
+              break;
+            case 'error':
+              setExportProgress(prev => ({
+                ...prev,
+                isError: true,
+                currentMessage: data.message || '导出失败',
+              }));
+              appendExportLog(`错误: ${data.message || '导出失败'}`, 'error');
+              throw new Error(data.message || '导出失败');
+            case 'done':
+              exportDone = true;
+              updateExportProgress(100, '导出完成');
+              appendExportLog('导出完成', 'success');
+              break;
+            default:
+              break;
+          }
+        }
+      }
+
+      // 流结束后，如果成功则触发文件下载
+      if (exportDone && fileData) {
+        // 关闭进度弹窗
+        setExportProgress(prev => ({ ...prev, isOpen: false }));
+
+        // 下载文件（加密数据为 base64 字符串文本）
+        const blob = new Blob([fileData], { type: 'application/octet-stream' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.style.display = 'none';
+        a.style.position = 'fixed';
+        a.style.top = '0';
+        a.style.left = '0';
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+
+        showAlert({
+          type: 'success',
+          title: '导出成功',
+          message: '数据已成功导出，请妥善保管备份文件和密码',
+          timer: 3000,
+        });
+
+        setExportPassword('');
+      } else {
+        // 流结束但没有 done 事件（异常中断）
+        setExportProgress(prev => ({ ...prev, isError: true, currentMessage: '导出中断' }));
+        appendExportLog('导出中断，未收到完成信号', 'error');
+      }
     } catch (error) {
-      showAlert({
-        type: 'error',
-        title: '导出失败',
-        message: error instanceof Error ? error.message : '导出过程中发生错误',
-      });
+      // 错误时保持进度弹窗打开并显示错误
+      setExportProgress(prev => ({
+        ...prev,
+        isError: true,
+        currentMessage: error instanceof Error ? error.message : '导出过程中发生错误',
+      }));
+      appendExportLog(error instanceof Error ? error.message : '导出过程中发生错误', 'error');
     } finally {
       setIsExporting(false);
     }
@@ -737,6 +910,18 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
         currentMessage={importProgress.currentMessage}
         logs={importProgress.logs}
         isError={importProgress.isError}
+      />
+
+      {/* 导出进度弹窗 */}
+      <ImportProgressModal
+        isOpen={exportProgress.isOpen}
+        percent={exportProgress.percent}
+        currentMessage={exportProgress.currentMessage}
+        logs={exportProgress.logs}
+        isError={exportProgress.isError}
+        title="正在导出数据"
+        errorTitle="导出失败"
+        iconType="export"
       />
     </>
   );
