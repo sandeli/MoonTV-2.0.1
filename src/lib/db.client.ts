@@ -1062,13 +1062,37 @@ export async function getAllFavorites(): Promise<Record<string, Favorite>> {
 /**
  * 获取全部追更列表。
  */
-export async function getAllFollowings(): Promise<Record<string, Following>> {
+export async function getAllFollowings(
+  forceRemote = false
+): Promise<Record<string, Following>> {
   if (typeof window === 'undefined') {
     return {};
   }
 
   if (STORAGE_TYPE !== 'localstorage') {
     const cachedData = cacheManager.getCachedFollowings();
+
+    // 强制以远端为准：直接拉取远端数据，若与本地缓存不一致则用远端覆盖本地缓存
+    if (forceRemote) {
+      try {
+        const freshData = await fetchFromApi<Record<string, Following>>(
+          `/api/followings`
+        );
+        if (JSON.stringify(cachedData) !== JSON.stringify(freshData)) {
+          cacheManager.cacheFollowings(freshData);
+          window.dispatchEvent(
+            new CustomEvent('followingsUpdated', {
+              detail: freshData,
+            })
+          );
+        }
+        return freshData;
+      } catch (err) {
+        console.error('获取追更失败:', err);
+        triggerGlobalError('获取追更失败');
+        return cachedData ?? {};
+      }
+    }
 
     if (cachedData) {
       fetchFromApi<Record<string, Following>>(`/api/followings`)

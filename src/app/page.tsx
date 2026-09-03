@@ -501,7 +501,8 @@ function HomeClient() {
       setFollowingListLoading(true);
       setFollowingUpdatesLoading(true);
       try {
-        const allFollowings = await getAllFollowings();
+        // 进入追更页时以远端 /api/followings 为准，若与本地缓存不一致则用远端覆盖本地缓存
+        const allFollowings = await getAllFollowings(true);
         const allPlayRecords = await getAllPlayRecords();
         latestPlayRecordsRef.current = allPlayRecords;
 
