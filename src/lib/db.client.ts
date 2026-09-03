@@ -1200,6 +1200,171 @@ export async function isFollowing(
 }
 
 /**
+ * 批量刷新追更条目的最新集数。
+ *
+ * 通过一次 POST 调用服务端批量刷新接口，服务端会用搜索方式获取每个追更条目的
+ * 最新集数并一次性写回数据库，避免逐个 POST。
+ *
+ * @param followings 当前用户的追更列表（key 为 source+id）。不传则由服务端从数据库读取。
+ * @returns 刷新后的完整追更列表
+ */
+export interface FollowingRefreshItem {
+  key: string;
+  source: string;
+  id: string;
+  title: string;
+  total_episodes?: number;
+  updated?: boolean;
+  reason?: string;
+}
+
+export interface FollowingRefreshResult {
+  updatedCount: number;
+  failedCount: number;
+  successCount: number;
+  total: number;
+}
+
+export interface FollowingRefreshCallbacks {
+  onStart?: (total: number) => void;
+  onItemResult?: (item: FollowingRefreshItem) => void;
+  onItemFailed?: (item: FollowingRefreshItem) => void;
+  onComplete?: (result: FollowingRefreshResult) => void;
+}
+
+/**
+ * 流式批量刷新追更集数。
+ *
+ * 服务端通过 SSE 逐条推送成功获取的集数结果，本函数实时解析并：
+ *  - 通过 onItemResult / onItemFailed 回调逐条通知调用方（用于实时更新 UI）；
+ *  - 维护本地 refreshed 副本，最终返回刷新后的完整追更列表。
+ */
+export async function refreshFollowingsStream(
+  followings: Record<string, Following>,
+  callbacks?: FollowingRefreshCallbacks
+): Promise<Record<string, Following>> {
+  if (STORAGE_TYPE === 'localstorage') {
+    // localstorage 模式无服务端，直接返回当前数据
+    return followings || {};
+  }
+
+  // 本地副本：逐条应用服务端返回的最新集数
+  const refreshed: Record<string, Following> = { ...followings };
+
+  try {
+    const res = await fetchWithAuth('/api/followings/refresh', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ followings }),
+    });
+
+    if (!res.body) {
+      throw new Error('响应无 body，无法流式读取');
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    const handleEvent = (raw: string) => {
+      const line = raw.trim();
+      if (!line.startsWith('data:')) return;
+      const jsonStr = line.slice(5).trim();
+      if (!jsonStr) return;
+      let payload: Record<string, any>;
+      try {
+        payload = JSON.parse(jsonStr);
+      } catch {
+        return;
+      }
+
+      switch (payload.type) {
+        case 'start': {
+          callbacks?.onStart?.(payload.total || 0);
+          break;
+        }
+        case 'item_result': {
+          const item: FollowingRefreshItem = {
+            key: payload.key,
+            source: payload.source,
+            id: payload.id,
+            title: payload.title || '',
+            total_episodes: payload.total_episodes,
+            updated: payload.updated,
+          };
+          // 更新本地副本
+          const existing = refreshed[item.key];
+          if (existing && item.total_episodes) {
+            refreshed[item.key] = {
+              ...existing,
+              total_episodes: item.total_episodes,
+              title: item.title || existing.title,
+            };
+          }
+          callbacks?.onItemResult?.(item);
+          break;
+        }
+        case 'item_failed': {
+          callbacks?.onItemFailed?.({
+            key: payload.key,
+            source: payload.source,
+            id: payload.id,
+            title: payload.title || '',
+            reason: payload.reason || '',
+          });
+          break;
+        }
+        case 'complete': {
+          callbacks?.onComplete?.({
+            updatedCount: payload.updatedCount || 0,
+            failedCount: payload.failedCount || 0,
+            successCount: payload.successCount || 0,
+            total: payload.total || 0,
+          });
+          break;
+        }
+        default:
+          break;
+      }
+    };
+
+    // 读取流并解析 SSE 事件
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // SSE 事件以空行分隔
+      let sepIndex: number;
+      while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
+        const eventBlock = buffer.slice(0, sepIndex);
+        buffer = buffer.slice(sepIndex + 2);
+        handleEvent(eventBlock);
+      }
+    }
+    // 处理剩余缓冲
+    if (buffer.trim()) {
+      handleEvent(buffer);
+    }
+
+    // 更新本地缓存并通知组件
+    cacheManager.cacheFollowings(refreshed);
+    window.dispatchEvent(
+      new CustomEvent('followingsUpdated', {
+        detail: refreshed,
+      })
+    );
+
+    return refreshed;
+  } catch (err) {
+    console.error('批量刷新追更失败:', err);
+    triggerGlobalError('批量刷新追更失败');
+    return refreshed;
+  }
+}
+
+/**
  * 保存收藏。
  * 数据库存储模式下使用乐观更新：先更新缓存，再异步同步到数据库。
  */
