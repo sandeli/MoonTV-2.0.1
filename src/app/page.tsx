@@ -773,7 +773,7 @@ function HomeClient() {
                   <h3 className='mb-4 text-sm font-medium text-gray-600 dark:text-gray-300'>
                     有未观看
                   </h3>
-                  {followingUpdatesLoading &&
+                  {(followingUpdatesLoading || refreshProgress.running) &&
                   followingItems.filter((item) => item.unwatchedEpisodes > 0).length === 0 ? (
                     <div className='flex justify-center py-8'>
                       <div className='flex items-center gap-2 text-gray-500 dark:text-gray-400'>
