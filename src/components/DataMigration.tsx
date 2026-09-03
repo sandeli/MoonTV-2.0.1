@@ -379,6 +379,10 @@ const DataMigration = ({ onRefreshConfig }: DataMigrationProps) => {
                     <div>• 用户数据</div>
                     <div>• 播放记录</div>
                     <div>• 收藏夹</div>
+                    <div>• 追更</div>
+                    <div>• 今日新更</div>
+                    <div>• 搜索历史</div>
+                    <div>• 跳过片头片尾</div>
                   </div>
                 </div>
               </div>

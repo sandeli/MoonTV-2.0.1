@@ -70,6 +70,10 @@ export async function POST(req: NextRequest) {
         playRecords: await db.getAllPlayRecords(username),
         // 收藏夹
         favorites: await db.getAllFavorites(username),
+        // 追更
+        followings: await db.getAllFollowings(username),
+        // 今日新更
+        todayUpdated: await db.getTodayUpdated(username),
         // 搜索历史
         searchHistory: await db.getSearchHistory(username),
         // 跳过片头片尾配置

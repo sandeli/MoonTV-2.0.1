@@ -108,6 +108,21 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // 导入追更
+      if (user.followings) {
+        for (const [key, following] of Object.entries(user.followings)) {
+          const [source, id] = key.split('+');
+          if (source && id) {
+            await db.saveFollowing(username, source, id, following as any);
+          }
+        }
+      }
+
+      // 导入今日新更
+      if (user.todayUpdated) {
+        await db.setTodayUpdated(username, user.todayUpdated as any);
+      }
+
       // 导入搜索历史
       if (user.searchHistory && Array.isArray(user.searchHistory)) {
         for (const keyword of user.searchHistory.reverse()) { // 反转以保持顺序
