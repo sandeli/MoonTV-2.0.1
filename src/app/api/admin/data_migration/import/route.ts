@@ -212,7 +212,10 @@ export async function POST(req: NextRequest) {
             });
             const batched = await db.batchImportPlayRecords(
               username,
-              entries as Array<[string, any]>
+              entries as Array<[string, any]>,
+              (done) => {
+                sendProgress('播放记录', done, entries.length);
+              }
             );
             if (!batched) {
               // 非 D1 存储：分批并行逐条写入
@@ -241,7 +244,10 @@ export async function POST(req: NextRequest) {
             });
             const batched = await db.batchImportFavorites(
               username,
-              entries as Array<[string, any]>
+              entries as Array<[string, any]>,
+              (done) => {
+                sendProgress('收藏夹', done, entries.length);
+              }
             );
             if (!batched) {
               await runInBatches(
@@ -272,7 +278,10 @@ export async function POST(req: NextRequest) {
             });
             const batched = await db.batchImportFollowings(
               username,
-              entries as Array<[string, any]>
+              entries as Array<[string, any]>,
+              (done) => {
+                sendProgress('追更', done, entries.length);
+              }
             );
             if (!batched) {
               await runInBatches(
@@ -315,7 +324,13 @@ export async function POST(req: NextRequest) {
               dataType: '搜索历史',
               total: history.length,
             });
-            const batched = await db.batchImportSearchHistory(username, history);
+            const batched = await db.batchImportSearchHistory(
+              username,
+              history,
+              (done) => {
+                sendProgress('搜索历史', done, history.length);
+              }
+            );
             if (!batched) {
               let historyDone = 0;
               for (const keyword of history.reverse()) { // 反转以保持顺序
@@ -341,7 +356,10 @@ export async function POST(req: NextRequest) {
             });
             const batched = await db.batchImportSkipConfigs(
               username,
-              entries as Array<[string, any]>
+              entries as Array<[string, any]>,
+              (done) => {
+                sendProgress('跳过配置', done, entries.length);
+              }
             );
             if (!batched) {
               await runInBatches(

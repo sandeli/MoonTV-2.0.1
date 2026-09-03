@@ -811,19 +811,28 @@ export class D1Storage implements IStorage {
   // subrequest 数量，规避该限制。
   // ============================================================
 
-  // 将一批已构建好的语句按 D1 batch 上限（100 条/次）分批执行
-  private async runBatch(statements: D1PreparedStatement[]): Promise<void> {
+  // 将一批已构建好的语句按 D1 batch 上限（100 条/次）分批执行。
+  // onProgress 每完成一批回调一次（done 为已执行的语句条数，total 为语句总数），
+  // 用于让上层按批次推送进度，避免进度条长时间停滞。
+  private async runBatch(
+    statements: D1PreparedStatement[],
+    onProgress?: (done: number, total: number) => void
+  ): Promise<void> {
     const BATCH_LIMIT = 100;
+    let done = 0;
     for (let i = 0; i < statements.length; i += BATCH_LIMIT) {
       const chunk = statements.slice(i, i + BATCH_LIMIT);
       await this.db.batch(chunk);
+      done += chunk.length;
+      if (onProgress) onProgress(done, statements.length);
     }
   }
 
   // 批量导入播放记录（entries: [key, record][]，key 形如 "source+videoId"）
   async batchImportPlayRecords(
     username: string,
-    entries: Array<[string, PlayRecord]>
+    entries: Array<[string, PlayRecord]>,
+    onProgress?: (done: number, total: number) => void
   ): Promise<void> {
     const userId = await this.ensureUser(username);
     const statements: D1PreparedStatement[] = [];
@@ -870,13 +879,14 @@ export class D1Storage implements IStorage {
           )
       );
     }
-    await this.runBatch(statements);
+    await this.runBatch(statements, onProgress);
   }
 
   // 批量导入收藏（entries: [key, favorite][]）
   async batchImportFavorites(
     username: string,
-    entries: Array<[string, Favorite]>
+    entries: Array<[string, Favorite]>,
+    onProgress?: (done: number, total: number) => void
   ): Promise<void> {
     const userId = await this.ensureUser(username);
     const statements: D1PreparedStatement[] = [];
@@ -915,13 +925,14 @@ export class D1Storage implements IStorage {
           )
       );
     }
-    await this.runBatch(statements);
+    await this.runBatch(statements, onProgress);
   }
 
   // 批量导入追更（entries: [key, following][]）
   async batchImportFollowings(
     username: string,
-    entries: Array<[string, Following]>
+    entries: Array<[string, Following]>,
+    onProgress?: (done: number, total: number) => void
   ): Promise<void> {
     const userId = await this.ensureUser(username);
     const statements: D1PreparedStatement[] = [];
@@ -963,13 +974,14 @@ export class D1Storage implements IStorage {
           )
       );
     }
-    await this.runBatch(statements);
+    await this.runBatch(statements, onProgress);
   }
 
   // 批量导入跳过片头片尾配置（entries: [key, skipConfig][]）
   async batchImportSkipConfigs(
     username: string,
-    entries: Array<[string, SkipConfig]>
+    entries: Array<[string, SkipConfig]>,
+    onProgress?: (done: number, total: number) => void
   ): Promise<void> {
     const userId = await this.ensureUser(username);
     const statements: D1PreparedStatement[] = [];
@@ -1000,25 +1012,39 @@ export class D1Storage implements IStorage {
           )
       );
     }
-    await this.runBatch(statements);
+    await this.runBatch(statements, onProgress);
   }
 
   // 批量导入搜索历史（keywords 需保持原有顺序）
+  // 说明：getSearchHistory 按 created_at DESC 返回，故 keywords 为“从新到旧”。
+  // 批量插入时若所有 created_at 相同则无法保证顺序，这里为每条显式写入递减的
+  // created_at（最新一条时间最大），从而在批量导入后仍能按原顺序正确展示。
   async batchImportSearchHistory(
     username: string,
-    keywords: string[]
+    keywords: string[],
+    onProgress?: (done: number, total: number) => void
   ): Promise<void> {
     const userId = await this.ensureUser(username);
     const statements: D1PreparedStatement[] = [];
-    for (const keyword of keywords) {
+    // 基准时间（毫秒），最新一条（索引 0）时间最大，后续每条递减 1 秒
+    const baseTime = Date.now();
+    for (let i = 0; i < keywords.length; i++) {
+      const keyword = keywords[i];
       if (!keyword) continue;
+      // 格式化为 SQLite 可比较的 UTC 时间字符串 YYYY-MM-DD HH:MM:SS
+      const created = new Date(baseTime - i * 1000)
+        .toISOString()
+        .replace('T', ' ')
+        .slice(0, 19);
       statements.push(
         this.db
-          .prepare('INSERT INTO search_history (user_id, keyword) VALUES (?, ?)')
-          .bind(userId, keyword)
+          .prepare(
+            'INSERT INTO search_history (user_id, keyword, created_at) VALUES (?, ?, ?)'
+          )
+          .bind(userId, keyword, created)
       );
     }
-    await this.runBatch(statements);
+    await this.runBatch(statements, onProgress);
   }
 
   // 批量导入“今日新更”（每个用户仅一行，直接写入即可）

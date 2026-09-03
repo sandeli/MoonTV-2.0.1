@@ -302,10 +302,15 @@ export class DbManager {
   // 的 subrequest 限制）。其他存储类型返回 false，由调用方回退到逐条写入。
   async batchImportPlayRecords(
     username: string,
-    entries: Array<[string, PlayRecord]>
+    entries: Array<[string, PlayRecord]>,
+    onProgress?: (done: number, total: number) => void
   ): Promise<boolean> {
     if (typeof (this.storage as any).batchImportPlayRecords === 'function') {
-      await (this.storage as any).batchImportPlayRecords(username, entries);
+      await (this.storage as any).batchImportPlayRecords(
+        username,
+        entries,
+        onProgress
+      );
       return true;
     }
     return false;
@@ -313,10 +318,15 @@ export class DbManager {
 
   async batchImportFavorites(
     username: string,
-    entries: Array<[string, Favorite]>
+    entries: Array<[string, Favorite]>,
+    onProgress?: (done: number, total: number) => void
   ): Promise<boolean> {
     if (typeof (this.storage as any).batchImportFavorites === 'function') {
-      await (this.storage as any).batchImportFavorites(username, entries);
+      await (this.storage as any).batchImportFavorites(
+        username,
+        entries,
+        onProgress
+      );
       return true;
     }
     return false;
@@ -324,10 +334,15 @@ export class DbManager {
 
   async batchImportFollowings(
     username: string,
-    entries: Array<[string, Following]>
+    entries: Array<[string, Following]>,
+    onProgress?: (done: number, total: number) => void
   ): Promise<boolean> {
     if (typeof (this.storage as any).batchImportFollowings === 'function') {
-      await (this.storage as any).batchImportFollowings(username, entries);
+      await (this.storage as any).batchImportFollowings(
+        username,
+        entries,
+        onProgress
+      );
       return true;
     }
     return false;
@@ -335,10 +350,15 @@ export class DbManager {
 
   async batchImportSkipConfigs(
     username: string,
-    entries: Array<[string, SkipConfig]>
+    entries: Array<[string, SkipConfig]>,
+    onProgress?: (done: number, total: number) => void
   ): Promise<boolean> {
     if (typeof (this.storage as any).batchImportSkipConfigs === 'function') {
-      await (this.storage as any).batchImportSkipConfigs(username, entries);
+      await (this.storage as any).batchImportSkipConfigs(
+        username,
+        entries,
+        onProgress
+      );
       return true;
     }
     return false;
@@ -346,10 +366,15 @@ export class DbManager {
 
   async batchImportSearchHistory(
     username: string,
-    keywords: string[]
+    keywords: string[],
+    onProgress?: (done: number, total: number) => void
   ): Promise<boolean> {
     if (typeof (this.storage as any).batchImportSearchHistory === 'function') {
-      await (this.storage as any).batchImportSearchHistory(username, keywords);
+      await (this.storage as any).batchImportSearchHistory(
+        username,
+        keywords,
+        onProgress
+      );
       return true;
     }
     return false;
