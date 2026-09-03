@@ -131,10 +131,50 @@ function HomeClient() {
     oldEpisodes: number;
     newEpisodes: number;
   };
+  // “今日新更”持久化：保留一天（跨天自动清空），再次刷新/刷新页面不丢失当天记录
+  const TODAY_UPDATED_KEY = 'moon_today_updated_items';
+  const getTodayStr = () => {
+    const d = new Date();
+    const m = `${d.getMonth() + 1}`.padStart(2, '0');
+    const day = `${d.getDate()}`.padStart(2, '0');
+    return `${d.getFullYear()}-${m}-${day}`;
+  };
+  const loadTodayUpdated = (): TodayUpdatedItem[] => {
+    try {
+      const raw = localStorage.getItem(TODAY_UPDATED_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (parsed?.date !== getTodayStr()) return []; // 跨天清空
+      return Array.isArray(parsed.items) ? parsed.items : [];
+    } catch {
+      return [];
+    }
+  };
+  const persistTodayUpdated = (items: TodayUpdatedItem[]) => {
+    try {
+      localStorage.setItem(
+        TODAY_UPDATED_KEY,
+        JSON.stringify({ date: getTodayStr(), items })
+      );
+    } catch {
+      // 忽略存储失败
+    }
+  };
   const [todayUpdatedItems, setTodayUpdatedItems] = useState<TodayUpdatedItem[]>(
     []
   );
   const todayUpdatedRef = useRef<TodayUpdatedItem[]>([]);
+  // 记录“今日新更”列表当前所属日期，用于跨天时自动清空
+  const todayUpdatedDateRef = useRef(getTodayStr());
+
+  // 挂载时从 localStorage 恢复“今日新更”（仅客户端；跨天则自动清空）
+  useEffect(() => {
+    const items = loadTodayUpdated();
+    todayUpdatedRef.current = items;
+    setTodayUpdatedItems(items);
+    todayUpdatedDateRef.current = getTodayStr();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // 当前完整追更工作列表（随流式结果实时更新），供重试失败项时取最新数据
   const latestFollowingsRef = useRef<Record<string, any>>({});
   // 本次网页会话是否已自动刷新过追更（网页加载后仅第一次进入追更页自动刷新一次）
@@ -290,11 +330,15 @@ function HomeClient() {
     });
     latestFollowingsRef.current = workingFollowings;
 
-    // 清空失败列表与更新列表
+    // 失败列表每轮清空；“今日新更”仅跨天清空，同一天内再次刷新保留当天记录
     refreshFailedRef.current = [];
     setRefreshFailedItems([]);
-    todayUpdatedRef.current = [];
-    setTodayUpdatedItems([]);
+    if (getTodayStr() !== todayUpdatedDateRef.current) {
+      todayUpdatedDateRef.current = getTodayStr();
+      todayUpdatedRef.current = [];
+      setTodayUpdatedItems([]);
+      persistTodayUpdated([]);
+    }
 
     if (isRetry) {
       // 重试失败项：总数保持与总追更数一致，success/updated 累加，failed 归零重计
@@ -364,8 +408,17 @@ function HomeClient() {
             oldEpisodes: oldEpisodes || 0,
             newEpisodes,
           };
-          todayUpdatedRef.current = [...todayUpdatedRef.current, entry];
-          setTodayUpdatedItems(todayUpdatedRef.current);
+          // 合并进“今日新更”：同一影片已存在则更新其记录，否则追加（保留一天）
+          const existingIdx = todayUpdatedRef.current.findIndex(
+            (e) => e.source === entry.source && e.id === entry.id
+          );
+          if (existingIdx >= 0) {
+            todayUpdatedRef.current[existingIdx] = entry;
+          } else {
+            todayUpdatedRef.current = [...todayUpdatedRef.current, entry];
+          }
+          setTodayUpdatedItems([...todayUpdatedRef.current]);
+          persistTodayUpdated(todayUpdatedRef.current);
         }
         updateProgress({
           success: refreshProgressRef.current.success + 1,
