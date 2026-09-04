@@ -33,6 +33,8 @@ interface VideoCardProps {
   episodes?: number;
   source_name?: string;
   progress?: number;
+  /** 是否隐藏下方的播放进度条（追更页卡片无需显示进度条） */
+  hideProgress?: boolean;
   year?: string;
   from: 'playrecord' | 'favorite' | 'search' | 'douban';
   currentEpisode?: number;
@@ -53,6 +55,7 @@ export default function VideoCard({
   source,
   source_name,
   progress = 0,
+  hideProgress = false,
   year,
   from,
   currentEpisode,
@@ -582,7 +585,7 @@ export default function VideoCard({
 
       </div>
 
-      {config.showProgress && progress !== undefined && (
+      {config.showProgress && !hideProgress && progress !== undefined && (
         <div className='mt-1 h-1 w-full bg-gray-200 rounded-full overflow-hidden'>
           <div
             className='h-full bg-green-500 transition-all duration-500 ease-out'
@@ -644,6 +647,13 @@ export default function VideoCard({
                   '_blank'
                 );
               } else if (actualSource && actualId) {
+                // 与主点击一致：携带当前播放集数（1 基）
+                const newTabStartEp =
+                  typeof currentEpisode === 'number' &&
+                  Number.isInteger(currentEpisode) &&
+                  currentEpisode >= 1
+                    ? `&ep=${currentEpisode}`
+                    : '';
                 window.open(
                   `/play?source=${actualSource}&id=${actualId}&title=${encodeURIComponent(
                     actualTitle
@@ -651,7 +661,7 @@ export default function VideoCard({
                     isAggregate ? '&prefer=true' : ''
                   }${
                     actualQuery ? `&stitle=${encodeURIComponent(actualQuery.trim())}` : ''
-                  }${actualSearchType ? `&stype=${actualSearchType}` : ''}`,
+                  }${actualSearchType ? `&stype=${actualSearchType}` : ''}${newTabStartEp}`,
                   '_blank'
                 );
               }
