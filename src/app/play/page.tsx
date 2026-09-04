@@ -15,7 +15,6 @@ import {
 import {
   deleteFavorite,
   deleteFollowing,
-  deletePlayRecord,
   deleteSkipConfig,
   generateStorageKey,
   getAllPlayRecords,
@@ -1236,19 +1235,6 @@ function PlayPageClient() {
       // 记录当前播放进度（仅在同一集数切换时恢复）
       const currentPlayTime = artPlayerRef.current?.currentTime || 0;
       console.log('换源前当前播放时间:', currentPlayTime);
-
-      // 清除前一个历史记录
-      if (currentSourceRef.current && currentIdRef.current) {
-        try {
-          await deletePlayRecord(
-            currentSourceRef.current,
-            currentIdRef.current
-          );
-          console.log('已清除前一个播放记录');
-        } catch (err) {
-          console.error('清除播放记录失败:', err);
-        }
-      }
 
       // 清除并设置下一个跳过片头片尾配置
       if (currentSourceRef.current && currentIdRef.current) {
