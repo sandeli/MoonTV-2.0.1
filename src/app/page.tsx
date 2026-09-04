@@ -24,7 +24,10 @@ import {
   subscribeToDataUpdates,
 } from '@/lib/db.client';
 import { getDoubanCategories } from '@/lib/douban.client';
-import { computeUnwatchedEpisodes } from '@/lib/following';
+import {
+  buildPlayRecordTitleIndex,
+  computeUnwatchedEpisodes,
+} from '@/lib/following';
 import { DoubanItem } from '@/lib/types';
 
 import CapsuleSwitch from '@/components/CapsuleSwitch';
@@ -247,16 +250,23 @@ function HomeClient() {
       providedPlayRecords ?? latestPlayRecordsRef.current ?? (await getAllPlayRecords());
     latestPlayRecordsRef.current = allPlayRecords;
 
+    // 按标题索引播放记录，优先按标题匹配“当前播放集数/总集数”，
+    // 解决用户换片源观看后追更 key(source+id) 与播放记录 key 对不上而取不到的问题。
+    const playRecordTitleIndex = buildPlayRecordTitleIndex(allPlayRecords);
+
     const sorted = Object.entries(allFollowings)
       .sort(([, a], [, b]) => (b.save_time || 0) - (a.save_time || 0))
       .map(([key, item]) => {
         const plusIndex = key.indexOf('+');
         const source = key.slice(0, plusIndex);
         const id = key.slice(plusIndex + 1);
+        // 匹配顺序：先按追更标题精确命中最新播放记录，未命中再回退 source+id 直查
+        const matchedPlayRecord =
+          playRecordTitleIndex.get(item.title) ?? allPlayRecords[key];
         const watchedEpisodes =
-          allPlayRecords[key]?.index ?? item.watched_episodes ?? 0;
+          matchedPlayRecord?.index ?? item.watched_episodes ?? 0;
         const totalEpisodes =
-          item.total_episodes || allPlayRecords[key]?.total_episodes || 1;
+          item.total_episodes || matchedPlayRecord?.total_episodes || 1;
         const unwatchedEpisodes = computeUnwatchedEpisodes({
           totalEpisodes,
           watchedEpisodes,

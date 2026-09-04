@@ -450,4 +450,4 @@ MoonTV 支持标准的苹果 CMS V10 API 格式。
 
 ## ⭐ Star 趋势
 
-[![Stargazers over time](https://starchart.cc/stardm0/MoonTV.svg?variant=adaptive)](https://starchart.cc/stardm0/MoonTV)
+[![Star History Chart](https://star-history.dera.page/svg?repos=Stardm0/MoonTV)](https://star-history.dera.page/#Stardm0/MoonTV)
