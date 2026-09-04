@@ -963,8 +963,12 @@ function PlayPageClient() {
       setVideoDoubanId(detailData.douban_id || 0);
       setDetail(detailData);
 
-      if (currentEpisodeIndex >= detailData.episodes.length) {
-        setCurrentEpisodeIndex(0);
+      // 传入的起始集数超出本源可用集数范围时，直接定位到最后一集（而非回到第一集）
+      if (
+        detailData.episodes.length > 0 &&
+        currentEpisodeIndex >= detailData.episodes.length
+      ) {
+        setCurrentEpisodeIndex(detailData.episodes.length - 1);
       }
 
       // 规范 URL 参数
@@ -1181,6 +1185,26 @@ function PlayPageClient() {
         const allRecords = await getAllPlayRecords();
         const key = generateStorageKey(currentSource, currentId);
         const record = allRecords[key];
+
+        // URL 携带的起始集数（1 基，如追更页按标题匹配到的当前播放集数），优先采用
+        const requestedEp = Number(searchParams.get('ep'));
+        const requestedIndex =
+          Number.isInteger(requestedEp) && requestedEp >= 1
+            ? requestedEp - 1
+            : -1;
+
+        if (requestedIndex >= 0) {
+          // 仅当本地记录与指定集数一致时才恢复播放进度，否则从该集开头播放
+          const targetTime =
+            record && record.index - 1 === requestedIndex
+              ? record.play_time
+              : 0;
+          if (requestedIndex !== currentEpisodeIndex) {
+            setCurrentEpisodeIndex(requestedIndex);
+          }
+          resumeTimeRef.current = targetTime;
+          return;
+        }
 
         if (record) {
           const targetIndex = record.index - 1;
@@ -1712,6 +1736,23 @@ function PlayPageClient() {
   useEffect(() => {
     const Artplayer = artLibRef.current;
     const Hls = hlsLibRef.current;
+
+    // 选集索引越界时夹取：传入的起始集数大于当前播放源最大集数时播放最后一集，
+    // 负数则回到第一集。需在就绪/视频地址判断之前修正，避免越界集数导致无法生成视频地址。
+    if (
+      detail &&
+      detail.episodes &&
+      detail.episodes.length > 0 &&
+      currentEpisodeIndex !== null &&
+      (currentEpisodeIndex < 0 ||
+        currentEpisodeIndex >= detail.episodes.length)
+    ) {
+      setCurrentEpisodeIndex(
+        currentEpisodeIndex < 0 ? 0 : detail.episodes.length - 1
+      );
+      return;
+    }
+
     if (
       !libsReady ||
       !Artplayer ||
@@ -1724,10 +1765,11 @@ function PlayPageClient() {
       return;
     }
 
-    // 确保选集索引有效
+    // 确保选集索引有效（仅在剧集列表为空等异常时触发）
     if (
       !detail ||
       !detail.episodes ||
+      detail.episodes.length === 0 ||
       currentEpisodeIndex >= detail.episodes.length ||
       currentEpisodeIndex < 0
     ) {

@@ -274,6 +274,14 @@ export default function VideoCard({
         }${actualSearchType ? `&stype=${actualSearchType}` : ''}`
       );
     } else if (actualSource && actualId) {
+      // 携带当前播放集数（1 基）：追更页传的是按标题匹配得到的当前集数，
+      // 播放页挂载时优先采用该集数开始播放，避免因换片源导致 source+id 记录缺失而回到第 1 集
+      const startEp =
+        typeof currentEpisode === 'number' &&
+        Number.isInteger(currentEpisode) &&
+        currentEpisode >= 1
+          ? `&ep=${currentEpisode}`
+          : '';
       router.push(
         `/play?source=${actualSource}&id=${actualId}&title=${encodeURIComponent(
           actualTitle
@@ -281,7 +289,7 @@ export default function VideoCard({
           isAggregate ? '&prefer=true' : ''
         }${
           sanitizedQuery ? `&stitle=${encodeURIComponent(sanitizedQuery)}` : ''
-        }${actualSearchType ? `&stype=${actualSearchType}` : ''}`
+        }${actualSearchType ? `&stype=${actualSearchType}` : ''}${startEp}`
       );
     }
   }, [
@@ -295,6 +303,7 @@ export default function VideoCard({
     sanitizedQuery,
     actualSearchType,
     startLoading,
+    currentEpisode,
   ]);
 
   const config = useMemo(() => {
