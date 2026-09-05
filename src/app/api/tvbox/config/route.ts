@@ -62,7 +62,6 @@ export async function GET(request: Request) {
     ]);
 
     // 将内部 SourceConfig 映射为 TVBox 兼容的 sites
-    // 常见字段：key/api/name/type/searchable/quickSearch
     const tvboxSites = sites.map((s) => ({
       key: s.key,
       api: s.api,
@@ -73,7 +72,7 @@ export async function GET(request: Request) {
       ext: s.detail || '',
     }));
 
-    // 插入“豆瓣｜自定义”为第一个站点，指向分类接口
+    // 原有的 MoonTV 豆瓣自定义站点
     const origin = getRequestOrigin(request);
     const doubanCustomSite = {
       key: 'douban_custom',
@@ -84,12 +83,24 @@ export async function GET(request: Request) {
       ext: '',
     };
 
+    // 👇👇👇 新增：OK影视等新版客户端专用的原生豆瓣影视源 👇👇👇
+    const doubanNativeSite = {
+      key: "douban_native",
+      name: "豆瓣推荐",
+      type: 3,
+      api: "csp_Douban",
+      searchable: 0,
+      quickSearch: 0,
+      filterable: 0
+    };
+
     const payload: Record<string, any> = {
-      sites: [doubanCustomSite, ...tvboxSites],
+      // 👇 把 doubanNativeSite 放在第一个，OK影视会自动读取它作为首页海报墙
+      sites: [doubanNativeSite, doubanCustomSite, ...tvboxSites],
       parses: [],
       lives: [],
       ads: [],
-      // 👇👇👇 新增：原生豆瓣 TVBox 首页推荐 👇👇👇
+      // 保留 recommend 字段，兼容老版 TVBox
       recommend: [
         {
           name: "豆瓣推荐",
@@ -125,7 +136,6 @@ export async function GET(request: Request) {
           expires: "86400"
         }
       ]
-      // 👆👆👆 新增结束 👆👆👆
     };
 
     return NextResponse.json(payload, {
