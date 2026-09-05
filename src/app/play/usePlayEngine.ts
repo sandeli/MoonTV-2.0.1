@@ -20,6 +20,7 @@ import {
   savePlayRecord,
   saveSkipConfig,
 } from '@/lib/db.client';
+import { getDefaultPlaybackSaveInterval } from '@/lib/playback-settings';
 import { SearchResult } from '@/lib/types';
 import { getRequestTimeout, getVideoResolutionFromM3u8 } from '@/lib/utils';
 
@@ -1957,10 +1958,19 @@ export function usePlayEngine() {
 
       artPlayerRef.current.on('video:timeupdate', () => {
         const now = Date.now();
-        let interval = 5000;
-        if (process.env.NEXT_PUBLIC_STORAGE_TYPE === 'upstash') {
-          interval = 20000;
-        }
+        // 播放进度自动保存间隔：优先读取站点配置
+        // （RUNTIME_CONFIG.PLAYBACK_SAVE_INTERVAL，单位秒），未配置时回退到
+        // 存储类型默认值（Upstash 20s，其余 5s）
+        const configuredInterval =
+          typeof window !== 'undefined'
+            ? Number((window as any).RUNTIME_CONFIG?.PLAYBACK_SAVE_INTERVAL)
+            : 0;
+        const interval =
+          configuredInterval > 0
+            ? configuredInterval * 1000
+            : getDefaultPlaybackSaveInterval(
+                process.env.NEXT_PUBLIC_STORAGE_TYPE
+              ) * 1000;
         if (now - lastSaveTimeRef.current > interval) {
           saveCurrentPlayProgress();
           lastSaveTimeRef.current = now;
