@@ -62,6 +62,7 @@ export async function GET(request: Request) {
     ]);
 
     // 将内部 SourceConfig 映射为 TVBox 兼容的 sites
+    // 常见字段：key/api/name/type/searchable/quickSearch
     const tvboxSites = sites.map((s) => ({
       key: s.key,
       api: s.api,
@@ -95,12 +96,12 @@ export async function GET(request: Request) {
     };
 
     const payload: Record<string, any> = {
-      // 👇 把 doubanNativeSite 放在第一个，OK影视会自动读取它作为首页海报墙
+      // 👇 把 doubanNativeSite 放在 sites 数组的第一个，OK影视就会自动读取它作为首页海报墙
       sites: [doubanNativeSite, doubanCustomSite, ...tvboxSites],
       parses: [],
       lives: [],
       ads: [],
-      // 保留 recommend 字段，兼容老版 TVBox
+      // 👇 保留 recommend 字段，用来兼容老版本 TVBox 客户端
       recommend: [
         {
           name: "豆瓣推荐",
