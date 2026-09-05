@@ -10,7 +10,6 @@ export const runtime = 'edge';
 /**
  * TVBox 配置接口
  * 参考常见 TVBox JSON 结构，最小可用字段：sites
- * 未来可扩展 parses、lives、ads 等
  */
 export async function GET(request: Request) {
   try {
@@ -35,7 +34,6 @@ export async function GET(request: Request) {
       }
     }
 
-    // 本地模式下未提供查询参数则自动使用环境变量 PASSWORD
     if (storageType === 'localstorage' && !inputPassword) {
       inputPassword = process.env.PASSWORD || '';
     }
@@ -62,7 +60,6 @@ export async function GET(request: Request) {
     ]);
 
     // 将内部 SourceConfig 映射为 TVBox 兼容的 sites
-    // 常见字段：key/api/name/type/searchable/quickSearch
     const tvboxSites = sites.map((s) => ({
       key: s.key,
       api: s.api,
@@ -73,7 +70,11 @@ export async function GET(request: Request) {
       ext: s.detail || '',
     }));
 
-    // 原有的 MoonTV 豆瓣自定义站点
+    // 👇 核心修改：从你的源列表中智能提取出“🎬豆瓣资源”或者第一个可用影视源
+    const doubanResourceSite = tvboxSites.find((s) => s.name.includes('豆瓣') && !s.key.includes('douban_custom'));
+    const otherSites = tvboxSites.filter((s) => s !== doubanResourceSite);
+
+    // 原有的 MoonTV 豆瓣自定义分类
     const origin = getRequestOrigin(request);
     const doubanCustomSite = {
       key: 'douban_custom',
@@ -84,54 +85,41 @@ export async function GET(request: Request) {
       ext: '',
     };
 
-    // 👇👇👇 新增：OK影视等新版客户端专用的原生豆瓣影视源 👇👇👇
-    const doubanNativeSite = {
-      key: "douban_native",
-      name: "豆瓣推荐",
-      type: 3,
-      api: "csp_Douban",
-      searchable: 0,
-      quickSearch: 0,
-      filterable: 0
-    };
+    // 重新排序：把真实的视频源放在第一位，确保 OK影视 能够拉取到首页海报！
+    const finalSites = [];
+    if (doubanResourceSite) {
+      // 第一顺位：真实的豆瓣资源站（有海报，点开能播放）
+      finalSites.push(doubanResourceSite); 
+    } else if (otherSites.length > 0) {
+      // 兜底方案：如果没有叫豆瓣的，就拿列表里第一个当首页
+      finalSites.push(otherSites[0]);
+      otherSites.shift(); 
+    }
+    // 第二顺位：保留原版功能
+    finalSites.push(doubanCustomSite);
+    // 第三顺位：剩下的其他源
+    finalSites.push(...otherSites);
 
     const payload: Record<string, any> = {
-      // 👇 把 doubanNativeSite 放在 sites 数组的第一个，OK影视就会自动读取它作为首页海报墙
-      sites: [doubanNativeSite, doubanCustomSite, ...tvboxSites],
+      sites: finalSites,
       parses: [],
       lives: [],
       ads: [],
-      // 👇 保留 recommend 字段，用来兼容老版本 TVBox 客户端
+      // 保留 recommend 兼容原版 TVBox 首页
       recommend: [
         {
           name: "豆瓣推荐",
           request: {
             method: "GET",
-            header: [
-              {
-                key: "Referer",
-                value: "https://movie.douban.com/"
-              }
-            ],
-            url: {
-              raw: "https://movie.douban.com/j/new_search_subjects?sort=U&range=0,10&tags=&playable=1&start=0&year_range="
-            }
+            header: [{ key: "Referer", value: "https://movie.douban.com/" }],
+            url: { raw: "https://movie.douban.com/j/new_search_subjects?sort=U&range=0,10&tags=&playable=1&start=0&year_range=" }
           },
           response: {
             result: "$.data",
             data: [
-              {
-                key: "name",
-                value: "title"
-              },
-              {
-                key: "note",
-                value: "rate"
-              },
-              {
-                key: "pic",
-                value: "cover"
-              }
+              { key: "name", value: "title" },
+              { key: "note", value: "rate" },
+              { key: "pic", value: "cover" }
             ]
           },
           expires: "86400"
