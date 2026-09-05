@@ -89,6 +89,43 @@ export async function GET(request: Request) {
       parses: [],
       lives: [],
       ads: [],
+      // 👇👇👇 新增：原生豆瓣 TVBox 首页推荐 👇👇👇
+      recommend: [
+        {
+          name: "豆瓣推荐",
+          request: {
+            method: "GET",
+            header: [
+              {
+                key: "Referer",
+                value: "https://movie.douban.com/"
+              }
+            ],
+            url: {
+              raw: "https://movie.douban.com/j/new_search_subjects?sort=U&range=0,10&tags=&playable=1&start=0&year_range="
+            }
+          },
+          response: {
+            result: "$.data",
+            data: [
+              {
+                key: "name",
+                value: "title"
+              },
+              {
+                key: "note",
+                value: "rate"
+              },
+              {
+                key: "pic",
+                value: "cover"
+              }
+            ]
+          },
+          expires: "86400"
+        }
+      ]
+      // 👆👆👆 新增结束 👆👆👆
     };
 
     return NextResponse.json(payload, {
@@ -102,5 +139,3 @@ export async function GET(request: Request) {
     });
   }
 }
-
-
