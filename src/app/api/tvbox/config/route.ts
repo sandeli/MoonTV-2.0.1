@@ -9,8 +9,7 @@ export const runtime = 'edge';
 
 /**
  * TVBox 配置接口
- * 参考常见 TVBox JSON 结构，最小可用字段：sites
- * 未来可扩展 parses、lives、ads 等
+ * 支持图片代理（防止豆瓣防盗链导致海报裂图）
  */
 export async function GET(request: Request) {
   try {
@@ -61,8 +60,10 @@ export async function GET(request: Request) {
       getCacheTime(),
     ]);
 
+    // 获取当前请求的 Origin 地址 (例如 https://your-moontv.com)
+    const origin = getRequestOrigin(request);
+
     // 将内部 SourceConfig 映射为 TVBox 兼容的 sites
-    // 常见字段：key/api/name/type/searchable/quickSearch
     const tvboxSites = sites.map((s) => ({
       key: s.key,
       api: s.api,
@@ -73,19 +74,82 @@ export async function GET(request: Request) {
       ext: s.detail || '',
     }));
 
-    // 插入“豆瓣｜自定义”为第一个站点，指向分类接口
-    const origin = getRequestOrigin(request);
-    const doubanCustomSite = {
-      key: 'douban_custom',
-      api: `${origin}/api/tvbox/categories`,
-      name: '豆瓣｜自定义',
-      type: 1,
-      searchable: 0,
-      ext: '',
+    // 豆瓣官方 API Request Header 机制
+    const doubanHeader = [
+      {
+        key: 'Referer',
+        value: 'https://movie.douban.com/',
+      },
+      {
+        key: 'User-Agent',
+        value:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    ];
+
+    // 👇【核心防裂图修改】：通过 TVBox mapping 的格式化语法，将返回的豆瓣 cover 图片 URL 强制经过 MoonTV 的 image-proxy 反代处理
+    // 同时也补充了常用的备用第三方图片反代/ referrer 绕过设置
+    const doubanMapping = {
+      list: 'subjects',
+      id: 'id',
+      name: 'title',
+      pic: `${origin}/api/image-proxy?url={cover}`, // 包装为 MoonTV 项目自带的图片代理链接
+      remarks: 'rate',
     };
 
     const payload: Record<string, any> = {
-      sites: [doubanCustomSite, ...tvboxSites],
+      spider: '',
+      recommend: [
+        {
+          name: '豆瓣热门电影',
+          request: {
+            method: 'GET',
+            header: doubanHeader,
+            url: {
+              raw: 'https://movie.douban.com/j/search_subjects?type=movie&tag=%E7%83%AD%E9%97%A8&sort=recommend&page_limit=30&page_start=0',
+            },
+          },
+          mapping: doubanMapping,
+          expires: '86400',
+        },
+        {
+          name: '豆瓣热门电视剧',
+          request: {
+            method: 'GET',
+            header: doubanHeader,
+            url: {
+              raw: 'https://movie.douban.com/j/search_subjects?type=tv&tag=%E7%83%AD%E9%97%A8&sort=recommend&page_limit=30&page_start=0',
+            },
+          },
+          mapping: doubanMapping,
+          expires: '86400',
+        },
+        {
+          name: '豆瓣热门综艺',
+          request: {
+            method: 'GET',
+            header: doubanHeader,
+            url: {
+              raw: 'https://movie.douban.com/j/search_subjects?type=tv&tag=%E7%BB%BC%E8%8B%B1&sort=recommend&page_limit=30&page_start=0',
+            },
+          },
+          mapping: doubanMapping,
+          expires: '86400',
+        },
+        {
+          name: '豆瓣热门动漫',
+          request: {
+            method: 'GET',
+            header: doubanHeader,
+            url: {
+              raw: 'https://movie.douban.com/j/search_subjects?type=tv&tag=%E5%8A%A8%E6%BC%AB&sort=recommend&page_limit=30&page_start=0',
+            },
+          },
+          mapping: doubanMapping,
+          expires: '86400',
+        },
+      ],
+      sites: tvboxSites,
       parses: [],
       lives: [],
       ads: [],
