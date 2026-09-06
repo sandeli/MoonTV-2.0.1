@@ -62,95 +62,99 @@ export async function GET(request: Request) {
     });
 
     // 分页参数：t（分类 id），pg（页码，默认1），wd（关键字）
-    const tParam = Number(url.searchParams.get('t') || '');
+    // 【修改点 1】：如果不传 tParam 和 wdParam，默认 tParam 为 1（即默认选中 电影·热门 作为首页推荐墙）
+    const rawT = url.searchParams.get('t');
     const wdParam = url.searchParams.get('wd') || '';
+    const tParam = Number(rawT || (wdParam ? '' : '1')); 
+    
     const pgParam = Math.max(1, parseInt(url.searchParams.get('pg') || '1'));
     const pageSize = Math.max(1, Math.min(50, parseInt(url.searchParams.get('pagesize') || '20')));
 
-    if (tParam || wdParam) {
-      // 重建与 classes 相同顺序的选择器映射
-      const selectors: Array<{ kind: 'movie' | 'tv'; category?: string; label?: string }> = [];
-      doubanDefaults.movie.forEach((name) => selectors.push({ kind: 'movie', category: name }));
-      doubanDefaults.tv.forEach((name) => selectors.push({ kind: 'tv', category: name }));
-      custom.forEach((c) => selectors.push({ kind: c.type, label: c.query }));
+    // 重建与 classes 相同顺序的选择器映射
+    const selectors: Array<{ kind: 'movie' | 'tv'; category?: string; label?: string }> = [];
+    doubanDefaults.movie.forEach((name) => selectors.push({ kind: 'movie', category: name }));
+    doubanDefaults.tv.forEach((name) => selectors.push({ kind: 'tv', category: name }));
+    custom.forEach((c) => selectors.push({ kind: c.type, label: c.query }));
 
-      let kind: 'movie' | 'tv' = 'movie';
-      let category = '';
-      let label = '';
-      let sort = '';
-      if (tParam && tParam >= 1 && tParam <= selectors.length) {
-        const sel = selectors[tParam - 1];
-        kind = sel.kind;
-        category = sel.category || '';
-        label = sel.label || '';
-      }
-      if (wdParam) {
-        label = wdParam;
-      }
+    let kind: 'movie' | 'tv' = 'movie';
+    let category = '';
+    let label = '';
+    let sort = '';
 
-      const origin = url.origin;
-      const qs = new URLSearchParams();
-      qs.set('kind', kind);
-      // 处理“热门/最新”无数据的问题：
-      // - 热门：不传 category/label，由后端按默认推荐返回
-      // - 最新：不传 category/label，传 sort=time
-      if (category === '最新') {
-        sort = 'time';
-        category = '';
-        label = '';
-        // 按首页策略靠近“最新上映”：限定年份为当年
-        const year = new Date().getFullYear();
-        qs.set('year', String(year));
-      } else if (category === '热门') {
-        category = '';
-        label = '';
-      }
-
-      if (category) qs.set('category', category);
-      if (label) qs.set('label', label);
-      qs.set('start', String((pgParam - 1) * pageSize));
-      qs.set('limit', String(pageSize));
-      if (sort) qs.set('sort', sort);
-
-      const resp = await fetch(`${origin}/api/douban/recommends?${qs.toString()}`);
-      const data = await resp.json();
-      const list = Array.isArray((data as any).list) ? (data as any).list : [];
-
-      const payload = {
-        code: 1,
-        msg: 'success',
-        page: pgParam,
-        pagecount: 999,
-        limit: pageSize,
-        total: 0,
-        list: list.map((item: any) => ({
-          vod_id: item.id,
-          vod_name: item.title,
-          vod_pic: item.poster,
-          vod_year: item.year || '',
-          vod_remarks: item.rate || '',
-        })),
-      };
-
-      return NextResponse.json(payload, {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=0`,
-        },
-      });
+    if (tParam && tParam >= 1 && tParam <= selectors.length) {
+      const sel = selectors[tParam - 1];
+      kind = sel.kind;
+      category = sel.category || '';
+      label = sel.label || '';
+    }
+    if (wdParam) {
+      label = wdParam;
     }
 
-    // 返回分类
-    return NextResponse.json(
-      { code: 1, msg: 'success', class: classes, list: [] },
-      {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=0`,
-        },
+    const origin = url.origin;
+    const qs = new URLSearchParams();
+    qs.set('kind', kind);
+
+    // 处理“热门/最新”：
+    if (category === '最新') {
+      sort = 'time';
+      category = '';
+      label = '';
+      const year = new Date().getFullYear();
+      qs.set('year', String(year));
+    } else if (category === '热门') {
+      category = '';
+      label = '';
+    }
+
+    if (category) qs.set('category', category);
+    if (label) qs.set('label', label);
+    if (sort) qs.set('sort', sort);
+    qs.set('start', String((pgParam - 1) * pageSize));
+    qs.set('limit', String(pageSize));
+
+    // 请求豆瓣推荐数据
+    const resp = await fetch(`${origin}/api/douban/recommends?${qs.toString()}`);
+    const data = await resp.json();
+    const rawList = Array.isArray((data as any).list) ? (data as any).list : [];
+
+    // 【修改点 2】：格式化输出列表，增加针对防盗链的图片转换
+    const formattedList = rawList.map((item: any) => {
+      let posterUrl = item.poster || item.cover || '';
+      // 替换豆瓣原图域名，减少跨域防盗链导致的破图风险
+      if (posterUrl) {
+        posterUrl = posterUrl.replace('https://img1.doubanio.com', 'https://img.doubanio.com')
+                             .replace('https://img3.doubanio.com', 'https://img.doubanio.com');
       }
-    );
+
+      return {
+        vod_id: item.id || item.vod_id,
+        vod_name: item.title || item.vod_name,
+        vod_pic: posterUrl,
+        vod_year: item.year || '',
+        vod_remarks: item.rate ? `豆瓣:${item.rate}` : (item.remarks || ''),
+      };
+    });
+
+    // 【修改点 3】：无论是否有分类参数，都同时返回 class (分类) 和 list (海报墙)
+    const payload = {
+      code: 1,
+      msg: 'success',
+      page: pgParam,
+      pagecount: 999,
+      limit: pageSize,
+      total: formattedList.length,
+      class: classes,          // 保持分类列表输出
+      list: formattedList,     // 输出渲染首页的海报列表
+    };
+
+    return NextResponse.json(payload, {
+      headers: {
+        'Cache-Control': `public, max-age=${cacheTime}, s-maxage=0`,
+      },
+    });
+
   } catch (e) {
     return NextResponse.json({ code: 0, msg: 'error', class: [], list: [] }, { status: 500 });
   }
 }
-
-
