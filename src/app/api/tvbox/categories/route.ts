@@ -8,7 +8,12 @@ export const runtime = 'edge';
 /**
  * 抓取豆瓣数据的辅助函数（支持动态页码与自定义单页数量）
  */
-async function fetchDoubanData(type: string, tag: string, page: number = 1, limit: number = 60) {
+async function fetchDoubanData(
+  type: string,
+  tag: string,
+  page: number = 1,
+  limit: number = 60
+) {
   try {
     const pageStart = (page - 1) * limit;
     const targetUrl = `https://movie.douban.com/j/search_subjects?type=${type}&tag=${encodeURIComponent(
@@ -37,41 +42,94 @@ export async function GET(request: Request) {
   try {
     const origin = getRequestOrigin(request);
     const url = new URL(request.url);
-    const t = url.searchParams.get('t') || ''; // 分类参数
-    const wd = url.searchParams.get('wd') || ''; // 搜索关键字
-    
-    // 获取 TVBox 客户端传过来的页码参数（TVBox 常用 pg 或 page 字段）
-    const pgParam = url.searchParams.get('pg') || url.searchParams.get('page') || '1';
-    const page = parseInt(pgParam, 10) || 1;
-    const limit = 60; // 提升单页加载海报数量至 60 部
 
-    // 1. 如果 TVBoxApp 发起了搜索请求 (带 wd 参数)
-    if (wd.trim()) {
+    const ids = url.searchParams.get('ids') || ''; // TVBox 点击海报时传入的影片 ID/名称
+    const t = url.searchParams.get('t') || ''; // 分类参数
+    const wd = url.searchParams.get('wd') || ''; // 顶栏搜索关键字
+    const pgParam =
+      url.searchParams.get('pg') || url.searchParams.get('page') || '1';
+    const page = parseInt(pgParam, 10) || 1;
+    const limit = 60;
+
+    // =========================================================================
+    // 1. 【核心修复】：处理点击海报动作 (带 ids 参数) 或 顶栏搜索 (带 wd 参数)
+    //    将选中的影片标题发给后台聚合搜索，并将多源线路封装为 TVBox 详情结构
+    // =========================================================================
+    const searchQuery = ids.trim() || wd.trim();
+
+    if (searchQuery) {
       try {
         const searchRes = await fetch(
-          `${origin}/api/search?q=${encodeURIComponent(wd.trim())}`
+          `${origin}/api/search?q=${encodeURIComponent(searchQuery)}`
         );
+
         if (searchRes.ok) {
           const searchData = await searchRes.json();
-          const list = (searchData?.results || searchData || []).map(
-            (item: any) => ({
-              vod_id: item.title || item.name,
-              vod_name: item.title || item.name,
-              vod_pic: item.pic
-                ? `${item.pic}@Referer=https://movie.douban.com/@User-Agent=Mozilla/5.0`
-                : '',
-              vod_remarks: item.source || '全源搜索',
-            })
-          );
-          return NextResponse.json({ list });
+          const results = Array.isArray(searchData)
+            ? searchData
+            : searchData?.results || [];
+
+          if (results.length > 0) {
+            // 组装线路（将聚合搜索到的各个源拼接为 vod_play_from 和 vod_play_url）
+            const playFromList: string[] = [];
+            const playUrlList: string[] = [];
+
+            results.forEach((item: any, index: number) => {
+              const sourceName = item.source || item.site || `线路${index + 1}`;
+              const playUrl = item.url || item.playUrl || item.link || '';
+
+              if (playUrl) {
+                playFromList.push(sourceName);
+                // TVBox 格式：正片$播放链接
+                playUrlList.push(`播放$${playUrl}`);
+              }
+            });
+
+            // 获取第一项作为展示信息
+            const firstItem = results[0];
+            const vodPic = firstItem.pic
+              ? `${firstItem.pic}@Referer=https://movie.douban.com/@User-Agent=Mozilla/5.0`
+              : '';
+
+            const detailItem = {
+              vod_id: searchQuery,
+              vod_name: searchQuery,
+              vod_pic: vodPic,
+              type_name: '热门推荐',
+              vod_remarks: `${results.length}个可播放源`,
+              vod_actor: '网络聚合',
+              vod_director: '网络',
+              vod_content: `已自动聚合为您搜到 ${results.length} 个可用播放源，点击下方线路即可播放。`,
+              // 多线路分割协议
+              vod_play_from: playFromList.join('$$$'),
+              vod_play_url: playUrlList.join('$$$'),
+            };
+
+            return NextResponse.json({
+              list: [detailItem],
+            });
+          }
         }
       } catch (e) {
-        console.error('TVBox search error:', e);
+        console.error('TVBox detail/search error:', e);
       }
-      return NextResponse.json({ list: [] });
+
+      // 搜索无结果时的回退提示
+      return NextResponse.json({
+        list: [
+          {
+            vod_id: searchQuery,
+            vod_name: searchQuery,
+            vod_remarks: '未找到源',
+            vod_content: '暂未搜到该视频的有效播放线路。',
+          },
+        ],
+      });
     }
 
-    // 2. 顶部分类导航
+    // =========================================================================
+    // 2. 分类列表逻辑 (海报墙展示)
+    // =========================================================================
     const classCategories = [
       { type_id: '电影', type_name: '热门电影' },
       { type_id: '国产剧', type_name: '热门剧集' },
@@ -79,7 +137,6 @@ export async function GET(request: Request) {
       { type_id: '动漫', type_name: '热门动漫' },
     ];
 
-    // 3. 匹配当前分类与豆瓣请求参数
     let doubanType = 'movie';
     let doubanTag = '热门';
 
@@ -97,10 +154,10 @@ export async function GET(request: Request) {
       doubanTag = '热门';
     }
 
-    // 4. 根据当前页码去豆瓣抓取更多数据
+    // 获取豆瓣热门海报列表
     const subjects = await fetchDoubanData(doubanType, doubanTag, page, limit);
 
-    // 5. 映射为 TVBox 标准响应
+    // 映射海报墙列表
     const list = subjects.map((item: any) => {
       const rawCover = item.cover || item.pic || '';
       const formattedPic = rawCover
@@ -108,6 +165,7 @@ export async function GET(request: Request) {
         : '';
 
       return {
+        // 关键：vod_id 设为影片真实标题（点击海报时 TVBox 会将此 vod_id 传回 ids 参数）
         vod_id: item.title,
         vod_name: item.title,
         vod_pic: formattedPic,
@@ -116,10 +174,10 @@ export async function GET(request: Request) {
     });
 
     return NextResponse.json({
-      page: page, // 当前页
-      pagecount: 20, // 提示 TVBox 客户端有约 20 页，支持下拉继续加载
+      page: page,
+      pagecount: 20,
       limit: limit,
-      total: 1200, // 总作品预估数
+      total: 1200,
       class: classCategories,
       list: list,
     });
