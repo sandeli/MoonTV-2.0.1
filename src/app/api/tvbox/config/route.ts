@@ -9,7 +9,7 @@ export const runtime = 'edge';
 
 /**
  * TVBox 配置接口
- * 支持图片代理（防止豆瓣防盗链导致海报裂图）
+ * 包含：全局豆瓣推荐海报墙 + 第一个站点作为豆瓣聚合搜索主源
  */
 export async function GET(request: Request) {
   try {
@@ -60,10 +60,9 @@ export async function GET(request: Request) {
       getCacheTime(),
     ]);
 
-    // 获取当前请求的 Origin 地址 (例如 https://your-moontv.com)
     const origin = getRequestOrigin(request);
 
-    // 将内部 SourceConfig 映射为 TVBox 兼容的 sites
+    // 将内部 SourceConfig 映射为 TVBox 兼容的普通资源站点
     const tvboxSites = sites.map((s) => ({
       key: s.key,
       api: s.api,
@@ -73,6 +72,18 @@ export async function GET(request: Request) {
       quickSearch: 1,
       ext: s.detail || '',
     }));
+
+    // 👇【关键要点 1】：插入“豆瓣｜推荐聚合”为第一个站点
+    // 当在 TVBoxApp 点击海报墙图片时，客户端会调用第一个站点进行搜索，由于此站点关联所有源，从而触发全源自动搜索
+    const doubanCustomSite = {
+      key: 'douban_custom',
+      api: `${origin}/api/tvbox/categories`,
+      name: '豆瓣｜推荐聚合',
+      type: 1,
+      searchable: 1,
+      quickSearch: 1,
+      ext: '',
+    };
 
     // 豆瓣官方 API Request Header 机制
     const doubanHeader = [
@@ -87,18 +98,18 @@ export async function GET(request: Request) {
       },
     ];
 
-    // 👇【核心防裂图修改】：通过 TVBox mapping 的格式化语法，将返回的豆瓣 cover 图片 URL 强制经过 MoonTV 的 image-proxy 反代处理
-    // 同时也补充了常用的备用第三方图片反代/ referrer 绕过设置
+    // 通过 image-proxy 代理海报图片，防防盗链裂图
     const doubanMapping = {
       list: 'subjects',
       id: 'id',
       name: 'title',
-      pic: `${origin}/api/image-proxy?url={cover}`, // 包装为 MoonTV 项目自带的图片代理链接
+      pic: `${origin}/api/image-proxy?url={cover}`,
       remarks: 'rate',
     };
 
     const payload: Record<string, any> = {
       spider: '',
+      // 👇【关键要点 2】：首页顶栏/背景渲染的豆瓣推荐海报墙
       recommend: [
         {
           name: '豆瓣热门电影',
@@ -149,7 +160,8 @@ export async function GET(request: Request) {
           expires: '86400',
         },
       ],
-      sites: tvboxSites,
+      // 第一个 site 必须是 doubanCustomSite
+      sites: [doubanCustomSite, ...tvboxSites],
       parses: [],
       lives: [],
       ads: [],
