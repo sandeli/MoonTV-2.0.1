@@ -65,9 +65,8 @@ export async function GET(request: Request) {
       return NextResponse.json({ list: [] });
     }
 
-    // 2. 定义顶部分类导航
+    // 2. 定义顶部分类导航（已去除重复的“热门推荐”）
     const classCategories = [
-      { type_id: '热门', type_name: '热门推荐' },
       { type_id: '电影', type_name: '热门电影' },
       { type_id: '国产剧', type_name: '热门剧集' },
       { type_id: '综艺', type_name: '热门综艺' },
@@ -75,13 +74,10 @@ export async function GET(request: Request) {
     ];
 
     // 3. 匹配当前分类与豆瓣请求参数
-    let doubanType = 'tv';
+    let doubanType = 'movie';
     let doubanTag = '热门';
 
-    if (t === '电影') {
-      doubanType = 'movie';
-      doubanTag = '热门';
-    } else if (t === '国产剧') {
+    if (t === '国产剧') {
       doubanType = 'tv';
       doubanTag = '国产剧';
     } else if (t === '综艺') {
@@ -91,7 +87,7 @@ export async function GET(request: Request) {
       doubanType = 'tv';
       doubanTag = '动漫';
     } else {
-      // 默认（包含 '热门' 或空参数时）
+      // 默认（未传参或 t='电影' 时，均默认加载热门电影）
       doubanType = 'movie';
       doubanTag = '热门';
     }
@@ -122,8 +118,8 @@ export async function GET(request: Request) {
     console.error('TVBox categories API crash:', e);
     return NextResponse.json({
       class: [
-        { type_id: '热门', type_name: '热门推荐' },
         { type_id: '电影', type_name: '热门电影' },
+        { type_id: '国产剧', type_name: '热门剧集' },
       ],
       list: [],
     });
