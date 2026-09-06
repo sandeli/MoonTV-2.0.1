@@ -6,7 +6,7 @@ import { getRequestOrigin } from '@/lib/request-origin';
 export const runtime = 'edge';
 
 /**
- * 内部抓取豆瓣数据的辅助函数（带异常容错与 Header 伪装）
+ * 内部抓取豆瓣数据的辅助函数（带 Header 伪装与 revalidate 缓存）
  */
 async function fetchDoubanData(type: string, tag: string) {
   try {
@@ -36,7 +36,7 @@ export async function GET(request: Request) {
   try {
     const origin = getRequestOrigin(request);
     const url = new URL(request.url);
-    const t = url.searchParams.get('t') || ''; // 当前选中的分类，为空则默认热门
+    const t = url.searchParams.get('t') || ''; // 分类参数
     const wd = url.searchParams.get('wd') || ''; // 搜索关键字
 
     // 1. 如果 TVBoxApp 发起了搜索请求 (带 wd 参数)
@@ -52,9 +52,7 @@ export async function GET(request: Request) {
               vod_id: item.title || item.name,
               vod_name: item.title || item.name,
               vod_pic: item.pic
-                ? `${origin}/api/image-proxy?url=${encodeURIComponent(
-                    item.pic
-                  )}`
+                ? `${item.pic}@Referer=https://movie.douban.com/@User-Agent=Mozilla/5.0`
                 : '',
               vod_remarks: item.source || '全源搜索',
             })
@@ -67,7 +65,7 @@ export async function GET(request: Request) {
       return NextResponse.json({ list: [] });
     }
 
-    // 2. 分类菜单定义
+    // 2. 定义顶部分类导航
     const classCategories = [
       { type_id: '热门', type_name: '热门推荐' },
       { type_id: '电影', type_name: '热门电影' },
@@ -93,23 +91,28 @@ export async function GET(request: Request) {
       doubanType = 'tv';
       doubanTag = '动漫';
     } else {
-      // 默认（包含 '热门' 或空参数）
+      // 默认（包含 '热门' 或空参数时）
       doubanType = 'movie';
       doubanTag = '热门';
     }
 
-    // 直接抓取数据，不依赖内部 fetch 自循环
+    // 4. 获取豆瓣官方数据
     const subjects = await fetchDoubanData(doubanType, doubanTag);
 
-    // 将豆瓣数据映射为 TVBox 标准的海报墙格式 (vod_pic 使用 image-proxy 代理)
-    const list = subjects.map((item: any) => ({
-      vod_id: item.title,
-      vod_name: item.title,
-      vod_pic: item.cover
-        ? `${origin}/api/image-proxy?url=${encodeURIComponent(item.cover)}`
-        : '',
-      vod_remarks: item.rate ? `⭐ ${item.rate}` : '热门',
-    }));
+    // 5. 将豆瓣数据映射为 TVBox 标准格式，并附带 TVBox 原生 Referer Header 标注
+    const list = subjects.map((item: any) => {
+      const rawCover = item.cover || item.pic || '';
+      const formattedPic = rawCover
+        ? `${rawCover}@Referer=https://movie.douban.com/@User-Agent=Mozilla/5.0`
+        : '';
+
+      return {
+        vod_id: item.title,
+        vod_name: item.title,
+        vod_pic: formattedPic,
+        vod_remarks: item.rate ? `⭐ ${item.rate}` : '热门',
+      };
+    });
 
     return NextResponse.json({
       class: classCategories,
