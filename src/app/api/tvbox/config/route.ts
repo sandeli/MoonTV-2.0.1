@@ -9,7 +9,7 @@ export const runtime = 'edge';
 
 /**
  * TVBox 配置接口
- * 包含：全局豆瓣推荐海报墙 + 第一个站点作为豆瓣聚合搜索主源
+ * 同步 MoonTV 网页端首页豆瓣推荐数据 + 全源聚合搜索
  */
 export async function GET(request: Request) {
   try {
@@ -73,8 +73,7 @@ export async function GET(request: Request) {
       ext: s.detail || '',
     }));
 
-    // 👇【关键要点 1】：插入“豆瓣｜推荐聚合”为第一个站点
-    // 当在 TVBoxApp 点击海报墙图片时，客户端会调用第一个站点进行搜索，由于此站点关联所有源，从而触发全源自动搜索
+    // 默认第一个站点：豆瓣推荐聚合主源
     const doubanCustomSite = {
       key: 'douban_custom',
       api: `${origin}/api/tvbox/categories`,
@@ -85,82 +84,75 @@ export async function GET(request: Request) {
       ext: '',
     };
 
-    // 豆瓣官方 API Request Header 机制
-    const doubanHeader = [
-      {
-        key: 'Referer',
-        value: 'https://movie.douban.com/',
-      },
-      {
-        key: 'User-Agent',
-        value:
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-    ];
-
-    // 通过 image-proxy 代理海报图片，防防盗链裂图
+    // 数据映射规则（适配 MoonTV 自带 /api/douban 接口返回的数据结构）
     const doubanMapping = {
       list: 'subjects',
       id: 'id',
       name: 'title',
-      pic: `${origin}/api/image-proxy?url={cover}`,
+      pic: `${origin}/api/image-proxy?url={cover}`, // 统一由 MoonTV 防盗链图片代理处理
       remarks: 'rate',
     };
 
     const payload: Record<string, any> = {
       spider: '',
-      // 👇【关键要点 2】：首页顶栏/背景渲染的豆瓣推荐海报墙
+      // 👇【核心修改】：直接对齐 MoonTV 网页版首页调用的豆瓣分类与热门数据接口
       recommend: [
         {
-          name: '豆瓣热门电影',
+          name: '热门电影',
           request: {
             method: 'GET',
-            header: doubanHeader,
             url: {
-              raw: 'https://movie.douban.com/j/search_subjects?type=movie&tag=%E7%83%AD%E9%97%A8&sort=recommend&page_limit=30&page_start=0',
+              raw: `${origin}/api/douban?type=movie&tag=%E7%83%AD%E9%97%A8&page_limit=30&page_start=0`,
             },
           },
           mapping: doubanMapping,
-          expires: '86400',
+          expires: '3600',
         },
         {
-          name: '豆瓣热门电视剧',
+          name: '热门剧集',
           request: {
             method: 'GET',
-            header: doubanHeader,
             url: {
-              raw: 'https://movie.douban.com/j/search_subjects?type=tv&tag=%E7%83%AD%E9%97%A8&sort=recommend&page_limit=30&page_start=0',
+              raw: `${origin}/api/douban?type=tv&tag=%E7%83%AD%E9%97%A8&page_limit=30&page_start=0`,
             },
           },
           mapping: doubanMapping,
-          expires: '86400',
+          expires: '3600',
         },
         {
-          name: '豆瓣热门综艺',
+          name: '国产剧',
           request: {
             method: 'GET',
-            header: doubanHeader,
             url: {
-              raw: 'https://movie.douban.com/j/search_subjects?type=tv&tag=%E7%BB%BC%E8%8B%B1&sort=recommend&page_limit=30&page_start=0',
+              raw: `${origin}/api/douban?type=tv&tag=%E5%9B%BD%E4%BA%A7%E5%89%A7&page_limit=30&page_start=0`,
             },
           },
           mapping: doubanMapping,
-          expires: '86400',
+          expires: '3600',
         },
         {
-          name: '豆瓣热门动漫',
+          name: '综艺',
           request: {
             method: 'GET',
-            header: doubanHeader,
             url: {
-              raw: 'https://movie.douban.com/j/search_subjects?type=tv&tag=%E5%8A%A8%E6%BC%AB&sort=recommend&page_limit=30&page_start=0',
+              raw: `${origin}/api/douban?type=tv&tag=%E7%BB%BC%E8%8B%B1&page_limit=30&page_start=0`,
             },
           },
           mapping: doubanMapping,
-          expires: '86400',
+          expires: '3600',
+        },
+        {
+          name: '动漫',
+          request: {
+            method: 'GET',
+            url: {
+              raw: `${origin}/api/douban?type=tv&tag=%E5%8A%A8%E6%BC%AB&page_limit=30&page_start=0`,
+            },
+          },
+          mapping: doubanMapping,
+          expires: '3600',
         },
       ],
-      // 第一个 site 必须是 doubanCustomSite
       sites: [doubanCustomSite, ...tvboxSites],
       parses: [],
       lives: [],
