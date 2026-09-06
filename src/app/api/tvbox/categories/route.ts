@@ -6,13 +6,14 @@ import { getRequestOrigin } from '@/lib/request-origin';
 export const runtime = 'edge';
 
 /**
- * 内部抓取豆瓣数据的辅助函数（带 Header 伪装与 revalidate 缓存）
+ * 抓取豆瓣数据的辅助函数（支持动态页码与自定义单页数量）
  */
-async function fetchDoubanData(type: string, tag: string) {
+async function fetchDoubanData(type: string, tag: string, page: number = 1, limit: number = 60) {
   try {
+    const pageStart = (page - 1) * limit;
     const targetUrl = `https://movie.douban.com/j/search_subjects?type=${type}&tag=${encodeURIComponent(
       tag
-    )}&sort=recommend&page_limit=30&page_start=0`;
+    )}&sort=recommend&page_limit=${limit}&page_start=${pageStart}`;
 
     const res = await fetch(targetUrl, {
       headers: {
@@ -38,6 +39,11 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const t = url.searchParams.get('t') || ''; // 分类参数
     const wd = url.searchParams.get('wd') || ''; // 搜索关键字
+    
+    // 获取 TVBox 客户端传过来的页码参数（TVBox 常用 pg 或 page 字段）
+    const pgParam = url.searchParams.get('pg') || url.searchParams.get('page') || '1';
+    const page = parseInt(pgParam, 10) || 1;
+    const limit = 60; // 提升单页加载海报数量至 60 部
 
     // 1. 如果 TVBoxApp 发起了搜索请求 (带 wd 参数)
     if (wd.trim()) {
@@ -65,7 +71,7 @@ export async function GET(request: Request) {
       return NextResponse.json({ list: [] });
     }
 
-    // 2. 定义顶部分类导航（已去除重复的“热门推荐”）
+    // 2. 顶部分类导航
     const classCategories = [
       { type_id: '电影', type_name: '热门电影' },
       { type_id: '国产剧', type_name: '热门剧集' },
@@ -87,15 +93,14 @@ export async function GET(request: Request) {
       doubanType = 'tv';
       doubanTag = '动漫';
     } else {
-      // 默认（未传参或 t='电影' 时，均默认加载热门电影）
       doubanType = 'movie';
       doubanTag = '热门';
     }
 
-    // 4. 获取豆瓣官方数据
-    const subjects = await fetchDoubanData(doubanType, doubanTag);
+    // 4. 根据当前页码去豆瓣抓取更多数据
+    const subjects = await fetchDoubanData(doubanType, doubanTag, page, limit);
 
-    // 5. 将豆瓣数据映射为 TVBox 标准格式，并附带 TVBox 原生 Referer Header 标注
+    // 5. 映射为 TVBox 标准响应
     const list = subjects.map((item: any) => {
       const rawCover = item.cover || item.pic || '';
       const formattedPic = rawCover
@@ -111,6 +116,10 @@ export async function GET(request: Request) {
     });
 
     return NextResponse.json({
+      page: page, // 当前页
+      pagecount: 20, // 提示 TVBox 客户端有约 20 页，支持下拉继续加载
+      limit: limit,
+      total: 1200, // 总作品预估数
       class: classCategories,
       list: list,
     });
