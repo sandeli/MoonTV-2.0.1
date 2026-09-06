@@ -7,10 +7,6 @@ import { getRequestOrigin } from '@/lib/request-origin';
 
 export const runtime = 'edge';
 
-/**
- * TVBox 配置接口
- * 同步 MoonTV 网页端首页豆瓣推荐数据 + 全源聚合搜索
- */
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
@@ -20,7 +16,6 @@ export async function GET(request: Request) {
     const adminConfig = await getConfig();
     const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
     
-    // 本地存储模式下 un 参数可以为空
     if (storageType !== 'localstorage' && !un.trim()) {
       return NextResponse.json({ error: '缺少参数 un' }, { status: 400 });
     }
@@ -34,7 +29,6 @@ export async function GET(request: Request) {
       }
     }
 
-    // 本地模式下未提供查询参数则自动使用环境变量 PASSWORD
     if (storageType === 'localstorage' && !inputPassword) {
       inputPassword = process.env.PASSWORD || '';
     }
@@ -62,7 +56,6 @@ export async function GET(request: Request) {
 
     const origin = getRequestOrigin(request);
 
-    // 将内部 SourceConfig 映射为 TVBox 兼容的普通资源站点
     const tvboxSites = sites.map((s) => ({
       key: s.key,
       api: s.api,
@@ -73,86 +66,20 @@ export async function GET(request: Request) {
       ext: s.detail || '',
     }));
 
-    // 默认第一个站点：豆瓣推荐聚合主源
+    // 默认第一个主站点（让客户端首页默认渲染它为海报墙）
     const doubanCustomSite = {
       key: 'douban_custom',
       api: `${origin}/api/tvbox/categories`,
-      name: '豆瓣｜推荐聚合',
+      name: '豆瓣｜热门推荐',
       type: 1,
       searchable: 1,
       quickSearch: 1,
+      filterable: 0,
       ext: '',
-    };
-
-    // 数据映射规则（适配 MoonTV 自带 /api/douban 接口返回的数据结构）
-    const doubanMapping = {
-      list: 'subjects',
-      id: 'id',
-      name: 'title',
-      pic: `${origin}/api/image-proxy?url={cover}`, // 统一由 MoonTV 防盗链图片代理处理
-      remarks: 'rate',
     };
 
     const payload: Record<string, any> = {
       spider: '',
-      // 👇【核心修改】：直接对齐 MoonTV 网页版首页调用的豆瓣分类与热门数据接口
-      recommend: [
-        {
-          name: '热门电影',
-          request: {
-            method: 'GET',
-            url: {
-              raw: `${origin}/api/douban?type=movie&tag=%E7%83%AD%E9%97%A8&page_limit=30&page_start=0`,
-            },
-          },
-          mapping: doubanMapping,
-          expires: '3600',
-        },
-        {
-          name: '热门剧集',
-          request: {
-            method: 'GET',
-            url: {
-              raw: `${origin}/api/douban?type=tv&tag=%E7%83%AD%E9%97%A8&page_limit=30&page_start=0`,
-            },
-          },
-          mapping: doubanMapping,
-          expires: '3600',
-        },
-        {
-          name: '国产剧',
-          request: {
-            method: 'GET',
-            url: {
-              raw: `${origin}/api/douban?type=tv&tag=%E5%9B%BD%E4%BA%A7%E5%89%A7&page_limit=30&page_start=0`,
-            },
-          },
-          mapping: doubanMapping,
-          expires: '3600',
-        },
-        {
-          name: '综艺',
-          request: {
-            method: 'GET',
-            url: {
-              raw: `${origin}/api/douban?type=tv&tag=%E7%BB%BC%E8%8B%B1&page_limit=30&page_start=0`,
-            },
-          },
-          mapping: doubanMapping,
-          expires: '3600',
-        },
-        {
-          name: '动漫',
-          request: {
-            method: 'GET',
-            url: {
-              raw: `${origin}/api/douban?type=tv&tag=%E5%8A%A8%E6%BC%AB&page_limit=30&page_start=0`,
-            },
-          },
-          mapping: doubanMapping,
-          expires: '3600',
-        },
-      ],
       sites: [doubanCustomSite, ...tvboxSites],
       parses: [],
       lives: [],
