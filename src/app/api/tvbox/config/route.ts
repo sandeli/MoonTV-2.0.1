@@ -26,9 +26,8 @@ export async function GET(request: Request) {
     let username = '';
     if (un.trim()) {
       try {
-        // 使用 Edge 兼容的 Base64 解码以防运行时崩溃
-        const decodedString = atob(un);
-        username = decodeURIComponent(escape(decodedString));
+        // 使用 Edge 兼容的标准 atob 解码
+        username = decodeURIComponent(escape(atob(un.replace(/-/g, '+').replace(/_/g, '/'))));
       } catch (e) {
         return NextResponse.json({ error: '参数 un 非法' }, { status: 400 });
       }
@@ -37,13 +36,11 @@ export async function GET(request: Request) {
     if (storageType === 'localstorage' && !inputPassword) {
       inputPassword = process.env.PASSWORD || '';
     }
-
     const enabled = storageType === 'localstorage'
       ? (process.env.TVBOX_ENABLED == null
           ? true
           : String(process.env.TVBOX_ENABLED).toLowerCase() === 'true')
       : adminConfig.SiteConfig.TVBoxEnabled === true;
-      
     const password = storageType === 'localstorage'
       ? (process.env.PASSWORD || '')
       : (adminConfig.SiteConfig.TVBoxPassword || '');
@@ -73,65 +70,59 @@ export async function GET(request: Request) {
 
     const origin = getRequestOrigin(request);
     
-    // 豆瓣自定义源：指定 type: 3 (聚合/爬虫类源) 并配合 spider，以支持海报墙与分类浏览
+    // 1. 设置豆瓣自定义节点为 Type 3 (爬虫/自定义分类模式)，使其在首页以海报网格展示
     const doubanCustomSite = {
       key: 'douban_custom',
-      api: `${origin}/api/tvbox/douban`, 
-      name: '豆瓣｜首页推荐',
+      name: '豆瓣｜热门推荐',
       type: 3,
-      searchable: 1,
-      quickSearch: 1,
+      api: `${origin}/api/tvbox/douban`,
+      searchable: 0,
+      quickSearch: 0,
       filterable: 1,
-      ext: '',
+      ext: ''
     };
 
     const payload: Record<string, any> = {
-      // 引入主流公共支持海报墙解析及弹窗样式的 spider 核心包
-      spider: "https://raw.githubusercontent.com/FongMi/CatVodTV/master/custom_spider.jar;md5;1234567890abcdef1234567890abcdef",
-      // 将“豆瓣｜首页推荐”放在列表第一位，确保 TVBox 启动时默认加载海报墙
+      // 保持“豆瓣｜热门推荐”在 sites 的第一个，客户端会默认优先加载此源作为首页
       sites: [doubanCustomSite, ...tvboxSites],
-      parses: [
-        { name: "聚合", type: 3, url: "demo" }
-      ],
+      parses: [],
       lives: [],
       ads: [],
-      // 配置默认首页展示与海报墙推荐数据流
+      // 2. 提供全局推荐墙（针对只读取 global recommend 的传统客户端）
       recommend: [
         {
-          name: "豆瓣热门电影",
+          name: "热门电影",
           request: {
             method: "GET",
-            header: [{ key: "Referer", value: "https://movie.douban.com/" }],
-            url: { raw: "https://movie.douban.com/j/new_search_subjects?sort=U&range=0,10&tags=电影&playable=1&start=0&year_range=" }
+            header: { "User-Agent": "Mozilla/5.0", "Referer": "https://movie.douban.com/" },
+            url: { raw: "https://movie.douban.com/j/search_subjects?type=movie&tag=%E7%83%AD%E9%97%A8&page_limit=50&page_start=0" }
           },
           response: {
-            result: "$.data",
+            result: "$.subjects",
             data: [
               { key: "name", value: "title" },
               { key: "note", value: "rate" },
               { key: "pic", value: "cover" },
               { key: "id", value: "id" }
             ]
-          },
-          expires: "86400"
+          }
         },
         {
-          name: "豆瓣热门电视剧",
+          name: "热门电视剧",
           request: {
             method: "GET",
-            header: [{ key: "Referer", value: "https://movie.douban.com/" }],
-            url: { raw: "https://movie.douban.com/j/new_search_subjects?sort=U&range=0,10&tags=电视剧&playable=1&start=0&year_range=" }
+            header: { "User-Agent": "Mozilla/5.0", "Referer": "https://movie.douban.com/" },
+            url: { raw: "https://movie.douban.com/j/search_subjects?type=tv&tag=%E7%83%AD%E9%97%A8&page_limit=50&page_start=0" }
           },
           response: {
-            result: "$.data",
+            result: "$.subjects",
             data: [
               { key: "name", value: "title" },
               { key: "note", value: "rate" },
               { key: "pic", value: "cover" },
               { key: "id", value: "id" }
             ]
-          },
-          expires: "86400"
+          }
         }
       ]
     };
@@ -139,7 +130,6 @@ export async function GET(request: Request) {
     return NextResponse.json(payload, {
       headers: {
         'Cache-Control': `public, max-age=${cacheTime}, s-maxage=0`,
-        'Content-Type': 'application/json; charset=utf-8',
       },
     });
   } catch (e) {
