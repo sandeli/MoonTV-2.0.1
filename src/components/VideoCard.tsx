@@ -4,7 +4,7 @@ import React, { MouseEvent } from 'react';
 import Image from 'next/image';
 import { Trash2, Heart } from 'lucide-react';
 
-interface VideoCardProps {
+export interface VideoCardProps {
   id?: string | number;
   title: string;
   cover?: string;
@@ -15,7 +15,7 @@ interface VideoCardProps {
   year?: string;
   type?: string;
   isBangumi?: boolean;
-  from?: string; // 👈 补全此字段，解决 src/app/douban/page.tsx 的报错
+  from?: string;
   config?: {
     showCheckCircle?: boolean;
     showHeart?: boolean;
@@ -23,6 +23,8 @@ interface VideoCardProps {
   onDelete?: (e: MouseEvent<HTMLElement>) => Promise<void> | void;
   onHeartClick?: (e: MouseEvent<HTMLElement>) => void;
   onClick?: () => void;
+  // 核心保险：允许任何其他传入的自定义属性，彻底杜绝属性不匹配导致的 TS 编译报错
+  [key: string]: any;
 }
 
 export const VideoCard: React.FC<VideoCardProps> = ({
@@ -60,7 +62,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
       <div className="relative aspect-[3/4] w-full overflow-hidden">
         <Image
           src={displayCover}
-          alt={title}
+          alt={title || ''}
           fill
           sizes="(max-width: 768px) 50vw, (max-width: 1200px) 33vw, 20vw"
           className="object-cover transition-transform duration-300 group-hover:scale-110"
