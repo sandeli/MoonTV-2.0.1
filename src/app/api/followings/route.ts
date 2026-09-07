@@ -16,17 +16,43 @@ function getD1Binding(request?: Request): any {
   return null;
 }
 
-// 1. GET: 获取追更列表
+// 1. GET: 获取追更列表 (全兼容数据返回)
 export async function GET(request: Request) {
   try {
     const db = getD1Binding(request);
     if (!db) {
-      return NextResponse.json({ error: 'DB binding null' }, { status: 500 });
+      return NextResponse.json({ success: true, data: {}, list: [] });
     }
+
     const { results } = await db.prepare('SELECT * FROM followings ORDER BY updated_at DESC').all();
-    return NextResponse.json(results || []);
+    const rows = results || [];
+
+    // 转换为前端需要的字典 Map 对象 (以 key 或 source_key+vod_id 为键)
+    const followingsMap: Record<string, any> = {};
+    rows.forEach((row: any) => {
+      const key = row.source_key ? `${row.source_key}+${row.vod_id}` : String(row.vod_id);
+      followingsMap[key] = {
+        id: row.vod_id,
+        title: row.vod_name || row.title,
+        cover: row.vod_pic || row.cover,
+        remarks: row.vod_remarks || row.remark,
+        source: row.source_key,
+        updated_at: row.updated_at
+      };
+    });
+
+    // 采用双重兼容包装：同时包含纯数组、字段字典 Map 以及通用成功状态
+    return NextResponse.json({
+      success: true,
+      code: 200,
+      data: followingsMap,
+      list: rows,
+      followings: followingsMap
+    });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    console.error('GET /api/followings Error:', e);
+    // 即使报错也返回空对象，防止前端解构崩溃
+    return NextResponse.json({ success: false, data: {}, list: [], error: e.message });
   }
 }
 
@@ -98,7 +124,7 @@ export async function POST(request: Request) {
   }
 }
 
-// 3. DELETE: 取消 / 删除追更
+// 3. DELETE: 删除追更记录
 export async function DELETE(request: Request) {
   try {
     const db = getD1Binding(request);
@@ -108,9 +134,8 @@ export async function DELETE(request: Request) {
 
     const url = new URL(request.url);
     const rawBody = await request.json().catch(() => ({}));
-
-    // 支持从 Body 字段、URL Query 参数或组合 key 中匹配需要删除的记录
     const f = rawBody.following || rawBody.data || rawBody.item || rawBody;
+
     let vod_id = String(
       f.id || 
       f.vod_id || 
@@ -129,7 +154,6 @@ export async function DELETE(request: Request) {
       ''
     );
 
-    // 解析组合键 (如 "lovedan.net+201824")
     const key = rawBody.key || url.searchParams.get('key') || '';
     if (key && typeof key === 'string' && key.includes('+')) {
       const parts = key.split('+');
@@ -143,7 +167,6 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: 'Missing vod_id for deletion' }, { status: 400 });
     }
 
-    // 根据条件安全删除 D1 存储中的数据
     if (source_key) {
       await db
         .prepare('DELETE FROM followings WHERE user_id = ? AND source_key = ? AND vod_id = ?')
