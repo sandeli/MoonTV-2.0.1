@@ -36,7 +36,7 @@ interface VideoCardProps {
   /** 是否隐藏下方的播放进度条（追更页卡片无需显示进度条） */
   hideProgress?: boolean;
   year?: string;
-  from: 'playrecord' | 'favorite' | 'search' | 'douban';
+  from: 'playrecord' | 'favorite' | 'search' | 'douban' | 'following';
   currentEpisode?: number;
   douban_id?: number;
   onDelete?: () => void;
@@ -69,7 +69,7 @@ export default function VideoCard({
   const router = useRouter();
   const { startLoading } = useNavigationLoading();
   const [favorited, setFavorited] = useState(false);
-  const [following, setFollowing] = useState(false);
+  const [following, setFollowing] = useState(true); // 追更页默认是 true
   const [isLoading, setIsLoading] = useState(false);
   const [showSources, setShowSources] = useState(false);
   const [favoriteChecked, setFavoriteChecked] = useState(false); // 是否已经检查过收藏状态
@@ -146,7 +146,6 @@ export default function VideoCard({
         setFavorited(isNowFavorited);
       });
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.error('检查收藏状态失败', err);
     }
   }, [from, actualSource, actualId]);
@@ -173,7 +172,6 @@ export default function VideoCard({
           setFavorited(true);
         }
       } catch (err) {
-        // eslint-disable-next-line no-console
         console.error('切换收藏状态失败', err);
       }
     },
@@ -216,6 +214,10 @@ export default function VideoCard({
         if (following) {
           await deleteFollowing(actualSource, actualId);
           setFollowing(false);
+          // 在追更卡片页点击删除后通知父组件刷新移除该项
+          if (from === 'following') {
+            onDelete?.();
+          }
         } else {
           await saveFollowing(actualSource, actualId, {
             title: actualTitle,
@@ -246,6 +248,7 @@ export default function VideoCard({
       actualEpisodes,
       sanitizedQuery,
       following,
+      onDelete,
     ]
   );
 
@@ -253,21 +256,22 @@ export default function VideoCard({
     async (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      if (from !== 'playrecord' || !actualSource || !actualId) return;
+      if (!actualSource || !actualId) return;
       try {
-        await deletePlayRecord(actualSource, actualId);
+        if (from === 'playrecord') {
+          await deletePlayRecord(actualSource, actualId);
+        } else if (from === 'following') {
+          await deleteFollowing(actualSource, actualId);
+        }
         onDelete?.();
       } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error('删除播放记录失败', err);
+        console.error('删除记录失败', err);
       }
     },
     [from, actualSource, actualId, onDelete]
   );
 
   const handleClick = useCallback(() => {
-    // 点击时不再检查收藏状态
-    // 触发加载动画
     startLoading();
 
     if (from === 'douban') {
@@ -277,8 +281,6 @@ export default function VideoCard({
         }${actualSearchType ? `&stype=${actualSearchType}` : ''}`
       );
     } else if (actualSource && actualId) {
-      // 携带当前播放集数（1 基）：追更页传的是按标题匹配得到的当前集数，
-      // 播放页挂载时优先采用该集数开始播放，避免因换片源导致 source+id 记录缺失而回到第 1 集
       const startEp =
         typeof currentEpisode === 'number' &&
         Number.isInteger(currentEpisode) &&
@@ -321,6 +323,16 @@ export default function VideoCard({
         showDoubanLink: !!actualDoubanId,
         showRating: false,
       },
+      following: {
+        showSourceName: true,
+        showProgress: false,
+        showPlayButton: true,
+        showHeart: true,
+        showFollowButton: true,
+        showCheckCircle: true,
+        showDoubanLink: !!actualDoubanId,
+        showRating: false,
+      },
       favorite: {
         showSourceName: true,
         showProgress: false,
@@ -355,7 +367,6 @@ export default function VideoCard({
     return configs[from] || configs.search;
   }, [from, isAggregate, actualDoubanId, rate]);
 
-  // 渲染
   return (
     <div
       className="group relative w-full rounded-lg bg-transparent cursor-pointer transition-all duration-300 ease-in-out hover:scale-[1.05] hover:z-[500] [container-type:inline-size]"
@@ -388,7 +399,6 @@ export default function VideoCard({
         }
       }}
       onMouseEnter={() => {
-          // 收藏夹里的卡片在该分支下默认已收藏，但仍需保持与首页/历史一致的追更状态检查
         if (from === 'favorite' && !favorited) {
           setFavorited(true);
           setFavoriteChecked(true);
@@ -396,7 +406,10 @@ export default function VideoCard({
           checkFavoriteStatus();
         }
 
-        if (config.showFollowButton && !followingChecked) {
+        if (from === 'following' && !following) {
+          setFollowing(true);
+          setFollowingChecked(true);
+        } else if (config.showFollowButton && !followingChecked) {
           checkFollowingStatus();
         }
       }}
@@ -425,20 +438,20 @@ export default function VideoCard({
 
         <div className='absolute inset-0 bg-gradient-to-t from-black/80 via-black-20 to-transparent opacity-0 transition-opacity duration-300 ease-in-out group-hover:opacity-100' />
 
-      {/* 播放按钮 */}
-      {config.showPlayButton && (
-            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
-              <PlayCircleIcon
-                size={50}
-                strokeWidth={0.8}
-                className="text-white fill-transparent hover:fill-green-500 hover:scale-[1.1] transition"
-                onClick={(e) => {
-                  e.stopPropagation(); // 阻止冒泡
-                  handleClick();       // 只在点击按钮时触发播放
-                }}
-              />
-            </div>
-          )}
+        {/* 播放按钮 */}
+        {config.showPlayButton && (
+          <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
+            <PlayCircleIcon
+              size={50}
+              strokeWidth={0.8}
+              className="text-white fill-transparent hover:fill-green-500 hover:scale-[1.1] transition"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleClick();
+              }}
+            />
+          </div>
+        )}
 
         {(config.showHeart || config.showFollowButton || config.showCheckCircle) && (
           <div className='absolute bottom-3 inset-x-3 flex items-center justify-end opacity-0 translate-y-2 transition-all duration-300 ease-in-out group-hover:opacity-100 group-hover:translate-y-0 [gap:clamp(0px,4cqi,0.75rem)]'>
@@ -447,6 +460,7 @@ export default function VideoCard({
                 onClick={handleDeleteRecord}
                 size={20}
                 className='flex-shrink-0 text-white transition-all duration-300 ease-out hover:stroke-red-500 hover:scale-[1.1]'
+                title="删除记录"
               />
             )}
             {config.showHeart && (
@@ -482,36 +496,28 @@ export default function VideoCard({
           </div>
         )}
 
-        {/* ⭐ 评分显示（左上角小圆圈，可跳转豆瓣或 Bangumi） */}
+        {/* 评分显示 */}
         {config.showRating && rate && actualDoubanId && (
-          <div
-            className="absolute top-2 left-2 bg-pink-500 text-white text-[10px] sm:text-xs font-bold px-2 py-0.5 rounded-full shadow-md cursor-pointer hover:bg-pink-600 transition"
-          >
+          <div className="absolute top-2 left-2 bg-pink-500 text-white text-[10px] sm:text-xs font-bold px-2 py-0.5 rounded-full shadow-md cursor-pointer hover:bg-pink-600 transition">
             {rate}
           </div>
         )}
 
-
-        {/* 📅 年份显示（左上角） */}
+        {/* 年份显示 */}
         {from === 'search' && actualYear && actualYear.toLowerCase() !== 'unknown' && (
-        <div
-          className="absolute top-2 left-2 bg-black/60 text-white text-[10px] sm:text-xs font-medium px-2 py-0.5 rounded-full shadow-md"
-        >
-          {actualYear}
-        </div>
+          <div className="absolute top-2 left-2 bg-black/60 text-white text-[10px] sm:text-xs font-medium px-2 py-0.5 rounded-full shadow-md">
+            {actualYear}
+          </div>
         )}
 
-        {/* 🔗 豆瓣/Bangumi跳转链接（左下角） */}
+        {/* 豆瓣/Bangumi跳转 */}
         {config.showDoubanLink && actualDoubanId && (
           <div
             onClick={(e) => {
-              e.stopPropagation(); // 阻止触发卡片点击
-              
+              e.stopPropagation();
               if (isBangumi) {
-                // 动漫 → Bangumi
                 window.open(`https://bangumi.tv/subject/${actualDoubanId}`, "_blank");
               } else {
-                // 默认 → 豆瓣
                 window.open(`https://movie.douban.com/subject/${actualDoubanId}`, "_blank");
               }
             }}
@@ -541,48 +547,40 @@ export default function VideoCard({
           </div>
         )}
 
-{/* 播放源徽章 */}
-{isAggregate && items && items.length > 0 && (
-  <div className="absolute bottom-2 right-2 flex flex-col items-end">
-    <div className="relative group/sources">
-      {/* 小圆圈按钮：默认显示 */}
-      <div
-        className="bg-gray-700 text-white text-xs sm:text-xs w-6 h-6 sm:w-7 sm:h-7 rounded-full flex items-center justify-center shadow-md hover:bg-gray-600 hover:scale-[1.1] transition-all duration-300 ease-out cursor-pointer"
-        onClick={(e) => {
-          e.stopPropagation();
-          setShowSources((prev) => !prev); // 点击切换列表显示
-        }}
-      >
-        {items.length}
-      </div>
+        {/* 播放源徽章 */}
+        {isAggregate && items && items.length > 0 && (
+          <div className="absolute bottom-2 right-2 flex flex-col items-end">
+            <div className="relative group/sources">
+              <div
+                className="bg-gray-700 text-white text-xs sm:text-xs w-6 h-6 sm:w-7 sm:h-7 rounded-full flex items-center justify-center shadow-md hover:bg-gray-600 hover:scale-[1.1] transition-all duration-300 ease-out cursor-pointer"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowSources((prev) => !prev);
+                }}
+              >
+                {items.length}
+              </div>
 
-{/* 播放源列表弹窗 */}
-{showSources && (
-  <div className="absolute bottom-full mb-2 right-0 sm:right-0 z-50">
-    <div className="bg-gray-800/90 backdrop-blur-sm text-white text-xs sm:text-xs rounded-lg shadow-xl border border-white/10 p-1 sm:p-1.5 min-w-[70px] sm:min-w-[90px] max-w-[120px] sm:max-w-[160px] max-h-20 sm:max-h-40 overflow-auto">
-      <div className="space-y-0.5 sm:space-y-1">
-        {items.map((item, idx) => (
-          <div key={idx} className="flex items-center gap-1 sm:gap-1.5">
-            <div className="w-0.5 h-0.5 sm:w-1 sm:h-1 bg-blue-400 rounded-full flex-shrink-0"></div>
-            <span className="truncate text-[10px] sm:text-xs leading-tight" title={item.source_name}>
-              {item.source_name}
-            </span>
+              {showSources && (
+                <div className="absolute bottom-full mb-2 right-0 sm:right-0 z-50">
+                  <div className="bg-gray-800/90 backdrop-blur-sm text-white text-xs sm:text-xs rounded-lg shadow-xl border border-white/10 p-1 sm:p-1.5 min-w-[70px] sm:min-w-[90px] max-w-[120px] sm:max-w-[160px] max-h-20 sm:max-h-40 overflow-auto">
+                    <div className="space-y-0.5 sm:space-y-1">
+                      {items.map((item, idx) => (
+                        <div key={idx} className="flex items-center gap-1 sm:gap-1.5">
+                          <div className="w-0.5 h-0.5 sm:w-1 sm:h-1 bg-blue-400 rounded-full flex-shrink-0"></div>
+                          <span className="truncate text-[10px] sm:text-xs leading-tight" title={item.source_name}>
+                            {item.source_name}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="absolute top-full right-2 sm:right-3 w-0 h-0 border-l-[4px] border-r-[4px] border-t-[4px] sm:border-l-[6px] sm:border-r-[6px] sm:border-t-[6px] border-transparent border-t-gray-800/90"></div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-        ))}
-      </div>
-
-      {/* 小箭头 */}
-      <div className="absolute top-full right-2 sm:right-3 w-0 h-0 border-l-[4px] border-r-[4px] border-t-[4px] sm:border-l-[6px] sm:border-r-[6px] sm:border-t-[6px] border-transparent border-t-gray-800/90"></div>
-    </div>
-  </div>
-)}
-{/* 播放源列表弹窗 */}
-
-    </div>
-  </div>
-)}
-
-
+        )}
       </div>
 
       {config.showProgress && !hideProgress && progress !== undefined && (
@@ -647,7 +645,6 @@ export default function VideoCard({
                   '_blank'
                 );
               } else if (actualSource && actualId) {
-                // 与主点击一致：携带当前播放集数（1 基）
                 const newTabStartEp =
                   typeof currentEpisode === 'number' &&
                   Number.isInteger(currentEpisode) &&
@@ -701,11 +698,11 @@ export default function VideoCard({
                     },
               ]
             : []),
-          ...(from === 'playrecord' && actualSource && actualId && onDelete
+          ...((from === 'playrecord' || from === 'following') && actualSource && actualId && onDelete
             ? [
                 {
                   id: 'delete-record',
-                  label: '删除播放记录',
+                  label: from === 'following' ? '取消追更' : '删除播放记录',
                   icon: <Trash2 size={18} />,
                   color: 'danger' as const,
                   onClick: (e?: React.MouseEvent) => handleDeleteRecord(e as React.MouseEvent),
