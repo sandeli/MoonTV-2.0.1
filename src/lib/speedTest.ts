@@ -1,15 +1,15 @@
 export interface SourceCandidate {
-  source: string; // 线路/源标识
+  source: string; // 源名称/标识 (如 "kwkan", "zxzj")
   id: string;     // 影片在该源下的 ID
-  url?: string;   // 可选的播放链接
+  name?: string;  // 源的显示名称
 }
 
 export interface SpeedTestResult extends SourceCandidate {
-  latency: number; // 延迟时间 (ms)
+  latency: number; // 响应延迟 (ms)
 }
 
 /**
- * 测试单个源的响应延迟（HEAD 请求）
+ * 单源 HEAD 请求超时测速
  */
 export async function testSourceSpeed<T extends SourceCandidate>(
   item: T,
@@ -20,7 +20,8 @@ export async function testSourceSpeed<T extends SourceCandidate>(
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const targetUrl = item.url || `/api/detail?source=${encodeURIComponent(item.source)}&id=${encodeURIComponent(item.id)}`;
+    // 请求 api/detail 验证接口建立连接的时延 (TTFB)
+    const targetUrl = `/api/detail?source=${encodeURIComponent(item.source)}&id=${encodeURIComponent(item.id)}`;
 
     const response = await fetch(targetUrl, {
       method: 'HEAD',
@@ -38,31 +39,32 @@ export async function testSourceSpeed<T extends SourceCandidate>(
     return { ...item, latency };
   } catch {
     clearTimeout(timeoutId);
-    return { ...item, latency: 999999 }; // 极高延迟代表超时或访问不通
+    // 超时或失败，赋予极大延迟值标记为不可用
+    return { ...item, latency: 999999 };
   }
 }
 
 /**
- * 并发测试所有源，返回延迟最低的有效源
+ * 并发测试所有源并返回延迟最低的源（策略 B）
  */
 export async function findFastestSource<T extends SourceCandidate>(
   sources: T[]
 ): Promise<T> {
   if (!sources || sources.length === 0) {
-    throw new Error('没有可用的源');
+    throw new Error('无可用源列表');
   }
 
-  // 1. 并发测速
+  // 1. 并发测试所有源
   const results = await Promise.all(
     sources.map((item) => testSourceSpeed(item))
   );
 
-  // 2. 过滤有效源并按延迟从小到大排序
+  // 2. 筛选出成功响应（<999999ms）的源，并按延迟升序排列
   const validSources = results
     .filter((res) => res.latency < 999999)
     .sort((a, b) => a.latency - b.latency);
 
-  // 3. 返回最佳源；全失败则默认返回列表中的第一个源
+  // 3. 返回最佳源；全超时则兜底返回列表中的第一个源
   if (validSources.length > 0) {
     const fastest = validSources[0];
     const matched = sources.find(
