@@ -39,65 +39,36 @@ export async function POST(request: Request) {
 
     const rawBody = await request.json().catch(() => ({}));
     
-    // 兼容可能存在的嵌套对象 (比如 { data: { ... } } 或 { item: { ... } })
-    const body = rawBody.data || rawBody.item || rawBody.detail || rawBody;
+    // 从 MoonTV 前端 payload 中层层提取数据实体
+    const f = rawBody.following || rawBody.data || rawBody.item || rawBody;
 
-    // 尽量从各种可能的 key 中提取 vod_id
-    const vod_id = String(
-      body.vod_id || 
-      body.id || 
-      body.vodId || 
-      body.target_id || 
-      rawBody.vod_id || 
-      rawBody.id || 
-      ''
-    );
+    // 1. 优先从 following.id 提取，如无则解析 key (例如 "lovedan.net+201824" 中的 201824)
+    let vod_id = String(f.id || f.vod_id || rawBody.vod_id || rawBody.id || '');
+    if (!vod_id && rawBody.key && typeof rawBody.key === 'string' && rawBody.key.includes('+')) {
+      vod_id = rawBody.key.split('+')[1] || '';
+    }
 
-    // 提取剧集名称
-    const vod_name = String(
-      body.vod_name || 
-      body.title || 
-      body.name || 
-      body.vodName || 
-      rawBody.vod_name || 
-      ''
-    );
+    // 2. 提取名称 (title: "早春晴朗")
+    const vod_name = String(f.title || f.vod_name || f.name || '');
 
-    // 提取封面图片
-    const vod_pic = String(
-      body.vod_pic || 
-      body.cover || 
-      body.pic || 
-      body.poster || 
-      body.vodPic || 
-      rawBody.vod_pic || 
-      ''
-    );
+    // 3. 提取图片 (cover: "https://...")
+    const vod_pic = String(f.cover || f.vod_pic || f.pic || '');
 
-    // 提取备注/更新集数
-    const vod_remarks = String(
-      body.vod_remarks || 
-      body.remark || 
-      body.remarks || 
-      body.vodRemarks || 
-      rawBody.vod_remarks || 
-      ''
-    );
+    // 4. 提取更新情况 (例如 "18集")
+    const vod_remarks = f.total_episodes 
+      ? `全${f.total_episodes}集` 
+      : String(f.vod_remarks || f.remark || '');
 
-    // 提取资源来源 key
-    const source_key = String(
-      body.source_key || 
-      body.source || 
-      body.sourceKey || 
-      rawBody.source_key || 
-      'default'
-    );
+    // 5. 提取站点来源 (source: "lovedan.net")
+    let source_key = String(f.source || f.source_key || f.source_name || '');
+    if (!source_key && rawBody.key && typeof rawBody.key === 'string' && rawBody.key.includes('+')) {
+      source_key = rawBody.key.split('+')[0] || 'default';
+    }
+    if (!source_key) source_key = 'default';
 
-    const user_id = String(body.user_id || rawBody.user_id || 'default');
+    const user_id = String(rawBody.user_id || f.user_id || 'default');
 
-    // 校验：如果实在没拿到 id，记录日志并抛错
     if (!vod_id) {
-      console.error('Missing vod_id Payload Received:', JSON.stringify(rawBody));
       return NextResponse.json({ error: 'Missing vod_id', receivedPayload: rawBody }, { status: 400 });
     }
 
