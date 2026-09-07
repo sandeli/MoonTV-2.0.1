@@ -16,6 +16,7 @@ function getD1Binding(request?: Request): any {
   return null;
 }
 
+// 1. GET: 获取追更列表
 export async function GET(request: Request) {
   try {
     const db = getD1Binding(request);
@@ -29,37 +30,28 @@ export async function GET(request: Request) {
   }
 }
 
+// 2. POST: 添加 / 保存追更
 export async function POST(request: Request) {
   try {
     const db = getD1Binding(request);
-
     if (!db) {
       return NextResponse.json({ error: 'D1 数据库未绑定' }, { status: 500 });
     }
 
     const rawBody = await request.json().catch(() => ({}));
-    
-    // 从 MoonTV 前端 payload 中层层提取数据实体
     const f = rawBody.following || rawBody.data || rawBody.item || rawBody;
 
-    // 1. 优先从 following.id 提取，如无则解析 key (例如 "lovedan.net+201824" 中的 201824)
     let vod_id = String(f.id || f.vod_id || rawBody.vod_id || rawBody.id || '');
     if (!vod_id && rawBody.key && typeof rawBody.key === 'string' && rawBody.key.includes('+')) {
       vod_id = rawBody.key.split('+')[1] || '';
     }
 
-    // 2. 提取名称 (title: "早春晴朗")
     const vod_name = String(f.title || f.vod_name || f.name || '');
-
-    // 3. 提取图片 (cover: "https://...")
     const vod_pic = String(f.cover || f.vod_pic || f.pic || '');
-
-    // 4. 提取更新情况 (例如 "18集")
     const vod_remarks = f.total_episodes 
       ? `全${f.total_episodes}集` 
       : String(f.vod_remarks || f.remark || '');
 
-    // 5. 提取站点来源 (source: "lovedan.net")
     let source_key = String(f.source || f.source_key || f.source_name || '');
     if (!source_key && rawBody.key && typeof rawBody.key === 'string' && rawBody.key.includes('+')) {
       source_key = rawBody.key.split('+')[0] || 'default';
@@ -74,7 +66,6 @@ export async function POST(request: Request) {
 
     const now = Math.floor(Date.now() / 1000);
 
-    // 写入 Cloudflare D1 数据库
     await db
       .prepare(
         `INSERT OR REPLACE INTO followings 
@@ -103,6 +94,75 @@ export async function POST(request: Request) {
     });
   } catch (e: any) {
     console.error('POST /api/followings Error:', e);
+    return NextResponse.json({ error: e.message || 'Internal Server Error' }, { status: 500 });
+  }
+}
+
+// 3. DELETE: 取消 / 删除追更
+export async function DELETE(request: Request) {
+  try {
+    const db = getD1Binding(request);
+    if (!db) {
+      return NextResponse.json({ error: 'D1 数据库未绑定' }, { status: 500 });
+    }
+
+    const url = new URL(request.url);
+    const rawBody = await request.json().catch(() => ({}));
+
+    // 支持从 Body 字段、URL Query 参数或组合 key 中匹配需要删除的记录
+    const f = rawBody.following || rawBody.data || rawBody.item || rawBody;
+    let vod_id = String(
+      f.id || 
+      f.vod_id || 
+      rawBody.vod_id || 
+      rawBody.id || 
+      url.searchParams.get('vod_id') || 
+      url.searchParams.get('id') || 
+      ''
+    );
+
+    let source_key = String(
+      f.source || 
+      f.source_key || 
+      rawBody.source_key || 
+      url.searchParams.get('source_key') || 
+      ''
+    );
+
+    // 解析组合键 (如 "lovedan.net+201824")
+    const key = rawBody.key || url.searchParams.get('key') || '';
+    if (key && typeof key === 'string' && key.includes('+')) {
+      const parts = key.split('+');
+      if (!source_key) source_key = parts[0];
+      if (!vod_id) vod_id = parts[1];
+    }
+
+    const user_id = String(rawBody.user_id || url.searchParams.get('user_id') || 'default');
+
+    if (!vod_id) {
+      return NextResponse.json({ error: 'Missing vod_id for deletion' }, { status: 400 });
+    }
+
+    // 根据条件安全删除 D1 存储中的数据
+    if (source_key) {
+      await db
+        .prepare('DELETE FROM followings WHERE user_id = ? AND source_key = ? AND vod_id = ?')
+        .bind(user_id, source_key, vod_id)
+        .run();
+    } else {
+      await db
+        .prepare('DELETE FROM followings WHERE user_id = ? AND vod_id = ?')
+        .bind(user_id, vod_id)
+        .run();
+    }
+
+    return NextResponse.json({
+      success: true,
+      code: 200,
+      message: '删除成功'
+    });
+  } catch (e: any) {
+    console.error('DELETE /api/followings Error:', e);
     return NextResponse.json({ error: e.message || 'Internal Server Error' }, { status: 500 });
   }
 }
