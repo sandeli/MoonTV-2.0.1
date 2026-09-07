@@ -6,8 +6,6 @@ import { Download, Heart } from 'lucide-react';
 
 import { SearchResult } from '@/lib/types';
 
-import { FollowingIconButton } from '@/components/FollowingIcon';
-
 interface VideoDetailPanelProps {
   videoTitle: string;
   videoYear: string;
@@ -15,9 +13,9 @@ interface VideoDetailPanelProps {
   currentEpisodeIndex: number;
   detail: SearchResult | null;
   favorited: boolean;
-  following: boolean;
+  following?: boolean;
   onToggleFavorite: () => void;
-  onToggleFollowing: () => void;
+  onToggleFollowing?: () => void;
   videoUrl: string;
   videoDoubanId: number;
   currentSource: string;
@@ -36,13 +34,9 @@ export function VideoDetailPanel(props: VideoDetailPanelProps) {
     currentEpisodeIndex,
     detail,
     favorited,
-    following,
     onToggleFavorite,
-    onToggleFollowing,
     videoUrl,
     videoDoubanId,
-    currentSource,
-    currentId,
     onDownload,
   } = props;
 
@@ -118,18 +112,6 @@ export function VideoDetailPanel(props: VideoDetailPanelProps) {
                     <path d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'></path>
                   </svg>
                 </a>
-              )}
-              {currentSource && currentId && (
-                <FollowingIconButton
-                  following={following}
-                  size={16}
-                  padding={8}
-                  theme='detail'
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleFollowing();
-                  }}
-                />
               )}
             </div>
           </h1>
