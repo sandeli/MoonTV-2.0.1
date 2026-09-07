@@ -2,7 +2,7 @@
 
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import {
   deleteFavorite,
@@ -14,6 +14,7 @@ import {
   saveFollowing,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
+import { findFastestSource, SourceCandidate } from '@/lib/speedTest';
 import { SearchResult } from '@/lib/types';
 
 /** 最小化的引用类型，避免依赖 React 类型细节 */
@@ -33,11 +34,15 @@ interface VideoActionsDeps {
   episodeIndexRef: RefLike<number>;
   /** 搜索标题，写入收藏/追更记录用于后续跳转 */
   searchTitle: string;
+  /** 所有可用的源列表，用于自动测速与竞速选择 */
+  allSources?: SourceCandidate[];
+  /** 自动选择源时的回调（可用于同步外层的 currentSource 和 currentId 状态） */
+  onSelectSource?: (source: string, id: string) => void;
 }
 
 /**
  * 管理当前视频的收藏（favorite）与追更（following）状态，
- * 包括初始加载、跨端数据更新订阅以及切换逻辑。
+ * 以及多源并发测速与自动选择最快源功能。
  */
 export function useVideoActions(deps: VideoActionsDeps) {
   const {
@@ -49,10 +54,38 @@ export function useVideoActions(deps: VideoActionsDeps) {
     detailRef,
     episodeIndexRef,
     searchTitle,
+    allSources = [],
+    onSelectSource,
   } = deps;
 
   const [favorited, setFavorited] = useState(false);
   const [following, setFollowing] = useState(false);
+  const [isTestingSpeed, setIsTestingSpeed] = useState(false);
+
+  // 自动并发测速选择最快源逻辑
+  const autoSelectFastestSource = useCallback(async () => {
+    if (!allSources || allSources.length <= 1) return;
+
+    setIsTestingSpeed(true);
+    try {
+      const fastest = await findFastestSource(allSources);
+      // 如果找到了比当前更优的源，触发外层选择
+      if (fastest && (fastest.source !== source || fastest.id !== id)) {
+        onSelectSource?.(fastest.source, fastest.id);
+      }
+    } catch (err) {
+      console.error('自动选择最快源失败:', err);
+    } finally {
+      setIsTestingSpeed(false);
+    }
+  }, [allSources, source, id, onSelectSource]);
+
+  // 组件挂载或源列表变化时触发测速
+  useEffect(() => {
+    if (allSources && allSources.length > 1) {
+      autoSelectFastestSource();
+    }
+  }, [allSources, autoSelectFastestSource]);
 
   // 每当 source 或 id 变化时检查收藏状态
   useEffect(() => {
@@ -171,5 +204,12 @@ export function useVideoActions(deps: VideoActionsDeps) {
     }
   };
 
-  return { favorited, following, handleToggleFavorite, handleToggleFollowing };
+  return {
+    favorited,
+    following,
+    isTestingSpeed,
+    handleToggleFavorite,
+    handleToggleFollowing,
+    autoSelectFastestSource,
+  };
 }
