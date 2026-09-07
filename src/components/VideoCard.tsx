@@ -6,7 +6,7 @@ import { Trash2, Heart } from 'lucide-react';
 
 export interface VideoCardProps {
   id?: string | number;
-  title: string;
+  title?: string; // 设为可选属性，防止 search/page.tsx 等组件因未传 title 报错
   cover?: string;
   poster?: string;
   rate?: string;
@@ -16,6 +16,8 @@ export interface VideoCardProps {
   type?: string;
   isBangumi?: boolean;
   from?: string;
+  items?: any[];
+  query?: string;
   config?: {
     showCheckCircle?: boolean;
     showHeart?: boolean;
@@ -23,12 +25,12 @@ export interface VideoCardProps {
   onDelete?: (e: MouseEvent<HTMLElement>) => Promise<void> | void;
   onHeartClick?: (e: MouseEvent<HTMLElement>) => void;
   onClick?: () => void;
-  // 核心保险：允许任何其他传入的自定义属性，彻底杜绝属性不匹配导致的 TS 编译报错
+  // 索引签名：全面兼容任何其他未显式声明的自定义属性
   [key: string]: any;
 }
 
 export const VideoCard: React.FC<VideoCardProps> = ({
-  title,
+  title = '',
   cover,
   poster,
   rate,
@@ -62,7 +64,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
       <div className="relative aspect-[3/4] w-full overflow-hidden">
         <Image
           src={displayCover}
-          alt={title || ''}
+          alt={title || 'video'}
           fill
           sizes="(max-width: 768px) 50vw, (max-width: 1200px) 33vw, 20vw"
           className="object-cover transition-transform duration-300 group-hover:scale-110"
@@ -81,7 +83,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
 
       <div className="flex items-center justify-between p-3">
         <h3 className="truncate text-sm font-medium text-white group-hover:text-red-400">
-          {title}
+          {title || '暂无标题'}
         </h3>
 
         <div className="flex items-center space-x-2">
