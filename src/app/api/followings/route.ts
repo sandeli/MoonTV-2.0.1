@@ -1,179 +1,89 @@
-/* eslint-disable no-console */
-
-import { NextRequest, NextResponse } from 'next/server';
-
-import { getAuthInfoFromCookie } from '@/lib/auth';
-import { getConfig } from '@/lib/config';
-import { db } from '@/lib/db';
-import { Following } from '@/lib/types';
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { NextResponse } from 'next/server';
 
 export const runtime = 'edge';
 
 /**
- * GET /api/followings
- *
- * 支持两种调用方式：
- * 1. 不带 query，返回全部追更列表（Record<string, Following>）。
- * 2. 带 key=source+id，返回单条追更（Following | null）。
+ * 兼容全环境（Pages / Workers / Edge）获取 D1 数据库句柄
  */
-export async function GET(request: NextRequest) {
+function getD1Binding(request?: Request): any {
+  // 1. process.env.DB
+  if (typeof process !== 'undefined' && process.env && process.env.DB) {
+    return process.env.DB;
+  }
+  // 2. globalThis.DB
+  if (typeof (globalThis as any).DB !== 'undefined') {
+    return (globalThis as any).DB;
+  }
+  // 3. Request 上下文
+  if (request && (request as any).env && (request as any).env.DB) {
+    return (request as any).env.DB;
+  }
+  return null;
+}
+
+export async function GET(request: Request) {
   try {
-    const authInfo = getAuthInfoFromCookie(request);
-    if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const db = getD1Binding(request);
+    if (!db) {
+      return NextResponse.json({ error: 'DB binding null' }, { status: 500 });
     }
-
-    const config = await getConfig();
-    if (config.UserConfig.Users) {
-      const user = config.UserConfig.Users.find(
-        (u) => u.username === authInfo.username
-      );
-      if (user && user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
-      }
-    }
-
-    const { searchParams } = new URL(request.url);
-    const key = searchParams.get('key');
-
-    if (key) {
-      const [source, id] = key.split('+');
-      if (!source || !id) {
-        return NextResponse.json(
-          { error: 'Invalid key format' },
-          { status: 400 }
-        );
-      }
-      const following = await db.getFollowing(authInfo.username, source, id);
-      return NextResponse.json(following, { status: 200 });
-    }
-
-    const followings = await db.getAllFollowings(authInfo.username);
-    return NextResponse.json(followings, { status: 200 });
-  } catch (err) {
-    console.error('获取追更失败', err);
-    return NextResponse.json(
-      { error: 'Internal Server Error' },
-      { status: 500 }
-    );
+    const { results } = await db.prepare('SELECT * FROM followings ORDER BY updated_at DESC').all();
+    return NextResponse.json(results || []);
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
 
-/**
- * POST /api/followings
- * body: { key: string; following: Following }
- */
-export async function POST(request: NextRequest) {
+export async function POST(request: Request) {
   try {
-    const authInfo = getAuthInfoFromCookie(request);
-    if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const db = getD1Binding(request);
+
+    if (!db) {
+      console.error('D1 Error: DB Binding Fail');
+      return NextResponse.json({ error: 'D1 数据库未挂载，请检查 CF 绑定设置' }, { status: 500 });
     }
 
-    const config = await getConfig();
-    if (config.UserConfig.Users) {
-      const user = config.UserConfig.Users.find(
-        (u) => u.username === authInfo.username
-      );
-      if (user && user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
-      }
+    const body = await request.json().catch(() => ({}));
+
+    // 提取并兜底所有入参字段，避免 SQLite 类型转换报错
+    const vod_id = String(body.vod_id || body.id || '');
+    const vod_name = String(body.vod_name || body.title || body.name || '');
+    const vod_pic = String(body.vod_pic || body.cover || body.pic || '');
+    const vod_remarks = String(body.vod_remarks || body.remark || '');
+    const source_key = String(body.source_key || body.source || 'default');
+    const user_id = String(body.user_id || 'default');
+
+    if (!vod_id) {
+      return NextResponse.json({ error: 'Missing vod_id' }, { status: 400 });
     }
 
-    const body = await request.json();
-    const { key, following }: { key: string; following: Following } = body;
+    const now = Math.floor(Date.now() / 1000);
 
-    if (!key || !following) {
-      return NextResponse.json(
-        { error: 'Missing key or following' },
-        { status: 400 }
-      );
-    }
+    // 使用 SQLite 最通用的 REPLACE 语法，彻底避免 ON CONFLICT 索引崩溃问题
+    await db
+      .prepare(
+        `INSERT OR REPLACE INTO followings 
+         (user_id, source_key, vod_id, vod_name, title, vod_pic, cover, vod_remarks, remark, updated_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        user_id,
+        source_key,
+        vod_id,
+        vod_name,
+        vod_name,
+        vod_pic,
+        vod_pic,
+        vod_remarks,
+        vod_remarks,
+        now
+      )
+      .run();
 
-    if (!following.title || !following.source_name) {
-      return NextResponse.json(
-        { error: 'Invalid following data' },
-        { status: 400 }
-      );
-    }
-
-    const [source, id] = key.split('+');
-    if (!source || !id) {
-      return NextResponse.json(
-        { error: 'Invalid key format' },
-        { status: 400 }
-      );
-    }
-
-    const finalFollowing = {
-      ...following,
-      save_time: following.save_time ?? Date.now(),
-    } as Following;
-
-    await db.saveFollowing(authInfo.username, source, id, finalFollowing);
-
-    return NextResponse.json({ success: true }, { status: 200 });
-  } catch (err) {
-    console.error('保存追更失败', err);
-    return NextResponse.json(
-      { error: 'Internal Server Error' },
-      { status: 500 }
-    );
-  }
-}
-
-/**
- * DELETE /api/followings
- *
- * 1. 不带 query -> 清空全部追更
- * 2. 带 key=source+id -> 删除单条追更
- */
-export async function DELETE(request: NextRequest) {
-  try {
-    const authInfo = getAuthInfoFromCookie(request);
-    if (!authInfo || !authInfo.username) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    const config = await getConfig();
-    if (config.UserConfig.Users) {
-      const user = config.UserConfig.Users.find(
-        (u) => u.username === authInfo.username
-      );
-      if (user && user.banned) {
-        return NextResponse.json({ error: '用户已被封禁' }, { status: 401 });
-      }
-    }
-
-    const username = authInfo.username;
-    const { searchParams } = new URL(request.url);
-    const key = searchParams.get('key');
-
-    if (key) {
-      const [source, id] = key.split('+');
-      if (!source || !id) {
-        return NextResponse.json(
-          { error: 'Invalid key format' },
-          { status: 400 }
-        );
-      }
-      await db.deleteFollowing(username, source, id);
-    } else {
-      const all = await db.getAllFollowings(username);
-      await Promise.all(
-        Object.keys(all).map(async (k) => {
-          const [s, i] = k.split('+');
-          if (s && i) await db.deleteFollowing(username, s, i);
-        })
-      );
-    }
-
-    return NextResponse.json({ success: true }, { status: 200 });
-  } catch (err) {
-    console.error('删除追更失败', err);
-    return NextResponse.json(
-      { error: 'Internal Server Error' },
-      { status: 500 }
-    );
+    return NextResponse.json({ success: true, code: 200, message: 'Saved successfully' });
+  } catch (e: any) {
+    console.error('POST /api/followings Error Details:', e);
+    return NextResponse.json({ error: e.message || 'Internal Server Error' }, { status: 500 });
   }
 }
