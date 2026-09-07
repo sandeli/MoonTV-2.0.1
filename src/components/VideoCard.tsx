@@ -5,11 +5,17 @@ import Image from 'next/image';
 import { Trash2, Heart } from 'lucide-react';
 
 interface VideoCardProps {
-  id: string | number;
+  id?: string | number;
   title: string;
-  cover: string;
+  cover?: string;
+  poster?: string;
   rate?: string;
   remarks?: string;
+  douban_id?: number;
+  year?: string;
+  type?: string;
+  isBangumi?: boolean;
+  from?: string; // 👈 补全此字段，解决 src/app/douban/page.tsx 的报错
   config?: {
     showCheckCircle?: boolean;
     showHeart?: boolean;
@@ -22,6 +28,7 @@ interface VideoCardProps {
 export const VideoCard: React.FC<VideoCardProps> = ({
   title,
   cover,
+  poster,
   rate,
   remarks,
   config = {},
@@ -29,6 +36,8 @@ export const VideoCard: React.FC<VideoCardProps> = ({
   onHeartClick,
   onClick,
 }) => {
+  const displayCover = cover || poster || '/placeholder.png';
+
   const handleDelete = async (e: MouseEvent<HTMLElement>) => {
     e.stopPropagation();
     if (onDelete) {
@@ -50,7 +59,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
     >
       <div className="relative aspect-[3/4] w-full overflow-hidden">
         <Image
-          src={cover || '/placeholder.png'}
+          src={displayCover}
           alt={title}
           fill
           sizes="(max-width: 768px) 50vw, (max-width: 1200px) 33vw, 20vw"
@@ -74,7 +83,6 @@ export const VideoCard: React.FC<VideoCardProps> = ({
         </h3>
 
         <div className="flex items-center space-x-2">
-          {/* 修复区域：将 title 属性挂载到外层包裹元素上，避免 TS 类型拦截 */}
           {config.showCheckCircle && onDelete && (
             <button
               type="button"
