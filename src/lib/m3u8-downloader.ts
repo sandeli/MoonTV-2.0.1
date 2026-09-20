@@ -510,7 +510,26 @@ export async function downloadM3U8Video(
   
   let completedCount = 0;
 
-  // 串行化写入函数：确保写入操作按顺序执行，避免多线程并发写入
+  // 断点续传：初始化时统计范围内已成功的片段，确保进度条显示正确的恢复进度
+  for (let i = startSegment - 1; i < endSegment; i++) {
+    if (task.finishList[i]?.status === 'success') {
+      completedCount++;
+    }
+  }
+  // 同步更新 task.finishNum，确保内部统计一致
+  if (completedCount > 0) {
+    task.finishNum = completedCount;
+    // 立即触发一次进度回调，确保UI立刻显示正确的恢复进度
+    onProgress?.({
+      current: completedCount,
+      total: totalSegments,
+      percentage: Math.floor((completedCount / totalSegments) * 100),
+      status: 'downloading',
+      message: `正在恢复下载 ${completedCount}/${totalSegments} 个片段已完成`,
+    });
+  }
+
+  // 串行化写入函数：确保写入操作按顺序执行，避免多线程并发写入导致数据丢失
   const flushPendingWrites = async (): Promise<void> => {
     // 等待之前的写入操作完成
     await writeLock;

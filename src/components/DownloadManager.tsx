@@ -438,6 +438,8 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
 
     // 断点续传：若存在持久化的完成状态，用它覆盖 parsedTask 的 finishList，
     // 并从 Cache Storage 找回普通模式下已下载的片段，避免刷新后从头再来。
+    let restoredSuccessCount = 0;
+    let rangeTotalSegments = 0;
     try {
       const { loadDownloadState, loadDownloadSegment } = await import('@/lib/download-persistence');
       const savedState = loadDownloadState(taskId);
@@ -455,8 +457,17 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
           }
         }
         if (restoredSegments.size > 0) parsedTask.downloadedSegments = restoredSegments;
+
+        // 计算下载范围内的已完成片段数，用于立即更新进度条显示
+        const { startSegment: rs, endSegment: re } = parsedTask.rangeDownload;
+        rangeTotalSegments = re - rs + 1;
+        for (let i = rs - 1; i < re; i++) {
+          if (parsedTask.finishList[i]?.status === 'success') {
+            restoredSuccessCount++;
+          }
+        }
         // eslint-disable-next-line no-console
-        console.log(`🔄 断点续传：从持久化状态恢复 ${savedState.finishList.filter(s => s.status === 'success').length} 个已完成片段，找回 ${restoredSegments.size} 个片段数据`);
+        console.log(`🔄 断点续传：从持久化状态恢复 ${savedState.finishList.filter(s => s.status === 'success').length} 个已完成片段（范围内${restoredSuccessCount}/${rangeTotalSegments}），找回 ${restoredSegments.size} 个片段数据`);
       }
     } catch {
       // 恢复失败不阻断下载，退化为重新下载
@@ -467,12 +478,24 @@ const DownloadManager = ({ isOpen, onClose }: DownloadManagerProps) => {
     const completeStreamRef = { current: null as (() => Promise<void>) | null };
     const { downloadType, concurrency, rangeMode, startSegment, endSegment, streamMode, maxRetries } = taskToDownload.config;
 
-    // 更新任务状态
-    setTasks(prev => prev.map(t =>
-      t.id === taskId
-        ? { ...t, status: 'downloading' as const, abortController: controller, pauseResumeController: pauseResumeController, completeStreamRef: completeStreamRef }
-        : t
-    ));
+    // 更新任务状态：如果恢复了已完成片段，立即更新 progress/current，确保UI立刻显示正确的恢复进度
+    setTasks(prev => prev.map(t => {
+      if (t.id !== taskId) return t;
+      const totalSegs = rangeTotalSegments > 0 ? rangeTotalSegments : (endSegment - startSegment + 1);
+      const currentProgress = restoredSuccessCount > 0 && totalSegs > 0
+        ? Math.floor((restoredSuccessCount / totalSegs) * 100)
+        : t.progress;
+      return {
+        ...t,
+        status: 'downloading' as const,
+        abortController: controller,
+        pauseResumeController: pauseResumeController,
+        completeStreamRef: completeStreamRef,
+        progress: currentProgress,
+        current: restoredSuccessCount > 0 ? restoredSuccessCount : t.current,
+        total: totalSegs > 0 ? totalSegs : t.total,
+      };
+    }));
 
     executeDownload(taskId, parsedTask, controller, pauseResumeController, downloadType, concurrency, rangeMode, startSegment, endSegment, streamMode || 'disabled', maxRetries ?? 3, completeStreamRef);
   }, [executeDownload]);
