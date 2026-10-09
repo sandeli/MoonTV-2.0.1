@@ -125,8 +125,7 @@ export default function PlayClient() {
           <div className='grid lg:h-[500px] xl:h-[650px] 2xl:h-[750px] grid-cols-1 md:grid-cols-4 md:gap-0'>
             {/* 播放器 */}
             <div className='h-full border-0 md:border-t md:border-b md:border-l md:border-white/0 md:dark:border-white/30 md:col-span-3'>
-              <div className='relative w-full h-[300px] lg:h-full'>
-                <div
+              <div className='relative isolate w-full h-[300px] lg:h-full'>                <div
                   ref={artRef}
                   className='bg-black w-full h-full overflow-hidden shadow-lg'
                 ></div>
@@ -153,13 +152,12 @@ export default function PlayClient() {
 
                 {/* 弹幕加载提示 */}
                 {isDanmakuLoading && (
-                  <div className='absolute top-4 left-4 right-4 z-[400] flex justify-center'>
+                  <div className='absolute top-4 left-4 right-4 z-40 flex justify-center'>
                     <div className='bg-gray-800/90 text-white px-4 py-2 rounded-lg shadow-lg'>
                       正在自动加载弹幕...
                     </div>
                   </div>
-                )}
-              </div>
+                )}              </div>
             </div>
 
             {/* 选集和换源 */}
