@@ -67,6 +67,36 @@ export async function GET(request: Request) {
     const pgParam = Math.max(1, parseInt(url.searchParams.get('pg') || '1'));
     const pageSize = Math.max(1, Math.min(50, parseInt(url.searchParams.get('pagesize') || '20')));
 
+    // 详情接口：TVBox 点选海报后请求 ?ac=detail&ids={vod_id}
+    // vod_id 格式为 {doubanId}${encodeURIComponent(title)}，解析出片名供 App 拿去搜索采集站
+    const idsParam = url.searchParams.get('ids') || '';
+    if (idsParam) {
+      const sepIdx = idsParam.indexOf('$');
+      const title = sepIdx > 0 ? decodeURIComponent(idsParam.slice(sepIdx + 1)) : '';
+      return NextResponse.json(
+        {
+          code: 1,
+          msg: 'success',
+          list: [
+            {
+              vod_id: idsParam,
+              vod_name: title,
+              vod_pic: '',
+              vod_year: '',
+              vod_remarks: '',
+              vod_play_from: '',
+              vod_play_url: '',
+            },
+          ],
+        },
+        {
+          headers: {
+            'Cache-Control': `public, max-age=${cacheTime}, s-maxage=0`,
+          },
+        }
+      );
+    }
+
     if (tParam || wdParam) {
       // 重建与 classes 相同顺序的选择器映射
       const selectors: Array<{ kind: 'movie' | 'tv'; category?: string; label?: string }> = [];
@@ -124,7 +154,7 @@ export async function GET(request: Request) {
         limit: pageSize,
         total: 0,
         list: list.map((item: any) => ({
-          vod_id: item.id,
+          vod_id: `${item.id}$${encodeURIComponent(item.title || '')}`,
           vod_name: item.title,
           vod_pic: item.poster,
           vod_year: item.year || '',
@@ -139,9 +169,37 @@ export async function GET(request: Request) {
       });
     }
 
-    // 返回分类
+    // 首页调用（无 t/wd 参数）：返回豆瓣热门电影作为海报墙，而非空列表
+    const origin = url.origin;
+    const homeQs = new URLSearchParams();
+    homeQs.set('kind', 'movie');
+    homeQs.set('start', '0');
+    homeQs.set('limit', '20');
+    let homeList: any[] = [];
+    try {
+      const homeResp = await fetch(`${origin}/api/douban/recommends?${homeQs.toString()}`);
+      const homeData = await homeResp.json();
+      if (Array.isArray((homeData as any).list)) {
+        homeList = (homeData as any).list;
+      }
+    } catch {
+      homeList = [];
+    }
+
+    // 返回分类 + 首页海报墙
     return NextResponse.json(
-      { code: 1, msg: 'success', class: classes, list: [] },
+      {
+        code: 1,
+        msg: 'success',
+        class: classes,
+        list: homeList.map((item: any) => ({
+          vod_id: `${item.id}$${encodeURIComponent(item.title || '')}`,
+          vod_name: item.title,
+          vod_pic: item.poster,
+          vod_year: item.year || '',
+          vod_remarks: item.rate || '',
+        })),
+      },
       {
         headers: {
           'Cache-Control': `public, max-age=${cacheTime}, s-maxage=0`,
