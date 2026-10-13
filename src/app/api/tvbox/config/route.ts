@@ -73,18 +73,21 @@ export async function GET(request: Request) {
       ext: s.detail || '',
     }));
 
-    // 插入“豆瓣｜自定义”为第一个站点，指向分类接口
+    // 默认第一个主站点（让客户端首页默认渲染它为海报墙）
     const origin = getRequestOrigin(request);
     const doubanCustomSite = {
       key: 'douban_custom',
       api: `${origin}/api/tvbox/categories`,
-      name: '豆瓣｜自定义',
+      name: '豆瓣｜热门推荐',
       type: 1,
-      searchable: 0,
+      searchable: 1,
+      quickSearch: 1,
+      filterable: 0,
       ext: '',
     };
 
     const payload: Record<string, any> = {
+      spider: '',
       sites: [doubanCustomSite, ...tvboxSites],
       parses: [],
       lives: [],

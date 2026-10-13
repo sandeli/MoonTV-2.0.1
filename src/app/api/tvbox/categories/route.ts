@@ -1,219 +1,263 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { NextResponse } from 'next/server';
 
-import { getCacheTime, getConfig } from '@/lib/config';
+import { getConfig } from '@/lib/config';
+import { getRequestOrigin } from '@/lib/request-origin';
 
 export const runtime = 'edge';
 
+/**
+ * 抓取豆瓣数据的辅助函数
+ */
+async function fetchDoubanData(
+  type: string,
+  tag: string,
+  page: number = 1,
+  limit: number = 60
+) {
+  try {
+    const pageStart = (page - 1) * limit;
+    const targetUrl = `https://movie.douban.com/j/search_subjects?type=${type}&tag=${encodeURIComponent(
+      tag
+    )}&sort=recommend&page_limit=${limit}&page_start=${pageStart}`;
+
+    const res = await fetch(targetUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        Referer: 'https://movie.douban.com/',
+      },
+      next: { revalidate: 3600 },
+    });
+
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data?.subjects || [];
+  } catch (error) {
+    console.error('Fetch Douban Error:', error);
+    return [];
+  }
+}
+
+/**
+ * 并发测速函数：测试播放源的 HTTP 响应延迟 (ms)
+ * 限制超时时间为 1500ms，超时或报错视作不可用 (9999ms)
+ */
+async function testSourceSpeed(url: string, timeoutMs = 1500): Promise<number> {
+  if (!url) return 9999;
+  const start = Date.now();
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    // 使用 HEAD 请求快速检测响应头，减少带宽消耗
+    const res = await fetch(url, {
+      method: 'HEAD',
+      signal: controller.signal,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+    clearTimeout(timer);
+
+    if (res.ok || res.status === 302 || res.status === 301) {
+      return Date.now() - start;
+    }
+    return 9999;
+  } catch (e) {
+    clearTimeout(timer);
+    return 9999;
+  }
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  let inputPassword = url.searchParams.get('pwd') || url.searchParams.get('password') || '';
 
+  // TVBox 开关检查（保留）
   const adminConfig = await getConfig();
   const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
-  // 本地模式下未提供查询参数则自动使用环境变量 PASSWORD
-  if (storageType === 'localstorage' && !inputPassword) {
-    inputPassword = process.env.PASSWORD || '';
-  }
-  const enabled = storageType === 'localstorage'
-    ? (process.env.TVBOX_ENABLED == null
+  const enabled =
+    storageType === 'localstorage'
+      ? process.env.TVBOX_ENABLED == null
         ? true
-        : String(process.env.TVBOX_ENABLED).toLowerCase() === 'true')
-    : adminConfig.SiteConfig.TVBoxEnabled === true;
-
+        : String(process.env.TVBOX_ENABLED).toLowerCase() === 'true'
+      : adminConfig.SiteConfig.TVBoxEnabled === true;
   if (!enabled) {
     return NextResponse.json({ error: 'TVBox 接口未开启' }, { status: 403 });
   }
 
   try {
-    const [cfg, cacheTime] = await Promise.all([
-      getConfig(),
-      getCacheTime(),
-    ]);
+    const origin = getRequestOrigin(request);
 
-    // 豆瓣默认分类（来源于 README 可用分类）
-    const doubanDefaults = {
-      movie: [
-        '热门','最新','经典','豆瓣高分',
-      ],
-      tv: [
-        '热门','美剧','英剧','韩剧','日剧','国产剧','日本动画',
-      ],
-    };
+    const ids = url.searchParams.get('ids') || '';
+    const t = url.searchParams.get('t') || '';
+    const wd = url.searchParams.get('wd') || '';
+    const pgParam =
+      url.searchParams.get('pg') || url.searchParams.get('page') || '1';
+    const page = parseInt(pgParam, 10) || 1;
+    const limit = 60;
 
-    // 用户自定义分类（从配置获取）
-    const custom = (cfg.CustomCategories || []).map((c) => ({
-      name: c.name || c.query,
-      type: c.type,
-      query: c.query,
-    }));
+    // =========================================================================
+    // 1. 点击海报或搜索逻辑：并发测速并自动按最快速度排序
+    // =========================================================================
+    const searchQuery = ids.trim() || wd.trim();
 
-    // Apple CMS 类似分类返回（参考 provide/vod 的分类结构）
-    const classes: { type_id: number; type_name: string }[] = [];
-    let nextId = 1;
+    if (searchQuery) {
+      try {
+        const searchRes = await fetch(
+          `${origin}/api/search?q=${encodeURIComponent(searchQuery)}`
+        );
 
-    doubanDefaults.movie.forEach((name) => {
-      classes.push({ type_id: nextId++, type_name: `电影·${name}` });
-    });
-    doubanDefaults.tv.forEach((name) => {
-      classes.push({ type_id: nextId++, type_name: `剧集·${name}` });
-    });
-    custom.forEach((c) => {
-      classes.push({ type_id: nextId++, type_name: `${c.name}` });
-    });
+        if (searchRes.ok) {
+          const searchData = await searchRes.json();
+          const results = Array.isArray(searchData)
+            ? searchData
+            : searchData?.results || [];
 
-    // 分页参数：t（分类 id），pg（页码，默认1），wd（关键字）
-    const tParam = Number(url.searchParams.get('t') || '');
-    const wdParam = url.searchParams.get('wd') || '';
-    const pgParam = Math.max(1, parseInt(url.searchParams.get('pg') || '1'));
-    const pageSize = Math.max(1, Math.min(50, parseInt(url.searchParams.get('pagesize') || '20')));
+          if (results.length > 0) {
+            // 限制最多并发测速前 8 个源，避免超时过长
+            const validCandidates = results.slice(0, 8);
 
-    // 详情接口：TVBox 点选海报后请求 ?ac=detail&ids={vod_id}
-    // vod_id 格式为 {doubanId}${encodeURIComponent(title)}，解析出片名供 App 拿去搜索采集站
-    const idsParam = url.searchParams.get('ids') || '';
-    if (idsParam) {
-      const sepIdx = idsParam.indexOf('$');
-      const title = sepIdx > 0 ? decodeURIComponent(idsParam.slice(sepIdx + 1)) : '';
-      return NextResponse.json(
-        {
-          code: 1,
-          msg: 'success',
-          list: [
-            {
-              vod_id: idsParam,
-              vod_name: title,
-              vod_pic: '',
-              vod_year: '',
-              vod_remarks: '',
-              vod_play_from: '',
-              vod_play_url: '',
-            },
-          ],
-        },
-        {
-          headers: {
-            'Cache-Control': `public, max-age=${cacheTime}, s-maxage=0`,
-          },
+            // 并发测试每个源的响应速度（取每源第一集地址测速）
+            const testedResults = await Promise.all(
+              validCandidates.map(async (item: any, index: number) => {
+                const playUrl =
+                  (item.episodes && item.episodes[0]) ||
+                  item.url ||
+                  item.playUrl ||
+                  item.link ||
+                  '';
+                const speed = await testSourceSpeed(playUrl);
+                return {
+                  sourceName:
+                    item.source_name || item.source || item.site || `线路${index + 1}`,
+                  playUrl,
+                  speed, // 单位毫秒，9999 代表失败或超时
+                  item,
+                };
+              })
+            );
+
+            // 按速度（延迟小）排序，让最快的源排在数组第一个
+            testedResults.sort((a, b) => a.speed - b.speed);
+
+            const playFromList: string[] = [];
+            const playUrlList: string[] = [];
+
+            testedResults.forEach((res) => {
+              if (res.playUrl) {
+                // 如果测速成功则显示延迟 ms，未响应显示常规
+                const speedLabel =
+                  res.speed < 9999 ? `⚡ ${res.speed}ms` : '常规';
+                playFromList.push(`[${speedLabel}] ${res.sourceName}`);
+                playUrlList.push(`正片$${res.playUrl}`);
+              }
+            });
+
+            // 获取最快源的信息作为封面
+            const fastestItem = testedResults[0]?.item || results[0];
+            const fastestPoster = fastestItem.poster || fastestItem.pic || '';
+            const vodPic = fastestPoster
+              ? `${fastestPoster}@Referer=https://movie.douban.com/@User-Agent=Mozilla/5.0`
+              : '';
+
+            const detailItem = {
+              vod_id: searchQuery,
+              vod_name: searchQuery,
+              vod_pic: vodPic,
+              type_name: '热门推荐',
+              vod_remarks: `极速播放 (首选: ${playFromList[0] || '默认'})`,
+              vod_actor: '网络聚合',
+              vod_director: '网络',
+              vod_content: `系统已自动为您检测并匹配了延迟最低的播放线路 (${playFromList[0]})。如有加载异常，可切换下方备用线路。`,
+              // 第一条即为速度最快的源，TVBox 将自动播放此源
+              vod_play_from: playFromList.join('$$$'),
+              vod_play_url: playUrlList.join('$$$'),
+            };
+
+            return NextResponse.json({
+              list: [detailItem],
+            });
+          }
         }
-      );
-    }
-
-    if (tParam || wdParam) {
-      // 重建与 classes 相同顺序的选择器映射
-      const selectors: Array<{ kind: 'movie' | 'tv'; category?: string; label?: string }> = [];
-      doubanDefaults.movie.forEach((name) => selectors.push({ kind: 'movie', category: name }));
-      doubanDefaults.tv.forEach((name) => selectors.push({ kind: 'tv', category: name }));
-      custom.forEach((c) => selectors.push({ kind: c.type, label: c.query }));
-
-      let kind: 'movie' | 'tv' = 'movie';
-      let category = '';
-      let label = '';
-      let sort = '';
-      if (tParam && tParam >= 1 && tParam <= selectors.length) {
-        const sel = selectors[tParam - 1];
-        kind = sel.kind;
-        category = sel.category || '';
-        label = sel.label || '';
-      }
-      if (wdParam) {
-        label = wdParam;
+      } catch (e) {
+        console.error('TVBox detail/search error:', e);
       }
 
-      const origin = url.origin;
-      const qs = new URLSearchParams();
-      qs.set('kind', kind);
-      // 处理“热门/最新”无数据的问题：
-      // - 热门：不传 category/label，由后端按默认推荐返回
-      // - 最新：不传 category/label，传 sort=time
-      if (category === '最新') {
-        sort = 'time';
-        category = '';
-        label = '';
-        // 按首页策略靠近“最新上映”：限定年份为当年
-        const year = new Date().getFullYear();
-        qs.set('year', String(year));
-      } else if (category === '热门') {
-        category = '';
-        label = '';
-      }
-
-      if (category) qs.set('category', category);
-      if (label) qs.set('label', label);
-      qs.set('start', String((pgParam - 1) * pageSize));
-      qs.set('limit', String(pageSize));
-      if (sort) qs.set('sort', sort);
-
-      const resp = await fetch(`${origin}/api/douban/recommends?${qs.toString()}`);
-      const data = await resp.json();
-      const list = Array.isArray((data as any).list) ? (data as any).list : [];
-
-      const payload = {
-        code: 1,
-        msg: 'success',
-        page: pgParam,
-        pagecount: 999,
-        limit: pageSize,
-        total: 0,
-        list: list.map((item: any) => ({
-          vod_id: `${item.id}$${encodeURIComponent(item.title || '')}`,
-          vod_name: item.title,
-          vod_pic: item.poster ? `${origin}/api/image-proxy?url=${encodeURIComponent(item.poster)}` : '',
-          vod_year: item.year || '',
-          vod_remarks: item.rate || '',
-        })),
-      };
-
-      return NextResponse.json(payload, {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=0`,
-        },
+      return NextResponse.json({
+        list: [
+          {
+            vod_id: searchQuery,
+            vod_name: searchQuery,
+            vod_remarks: '未找到源',
+            vod_content: '暂未搜到该视频的有效播放线路。',
+          },
+        ],
       });
     }
 
-    // 首页调用（无 t/wd 参数）：返回豆瓣热门推荐作为海报墙
-    // 豆瓣 recommend 接口单类返回较少，电影+剧集双路并行抓取后合并
-    const origin = url.origin;
-    const fetchHome = async (kind: string, limit: number): Promise<any[]> => {
-      const qs = new URLSearchParams();
-      qs.set('kind', kind);
-      qs.set('start', '0');
-      qs.set('limit', String(limit));
-      try {
-        const resp = await fetch(`${origin}/api/douban/recommends?${qs.toString()}`);
-        const data = await resp.json();
-        return Array.isArray((data as any).list) ? (data as any).list : [];
-      } catch {
-        return [];
-      }
-    };
-    const [movieList, tvList] = await Promise.all([
-      fetchHome('movie', 15),
-      fetchHome('tv', 15),
-    ]);
-    const homeList = [...movieList, ...tvList].slice(0, 30);
+    // =========================================================================
+    // 2. 分类海报墙逻辑
+    // =========================================================================
+    const classCategories = [
+      { type_id: '电影', type_name: '热门电影' },
+      { type_id: '国产剧', type_name: '热门剧集' },
+      { type_id: '综艺', type_name: '热门综艺' },
+      { type_id: '动漫', type_name: '热门动漫' },
+    ];
 
-    // 返回分类 + 首页海报墙
-    return NextResponse.json(
-      {
-        code: 1,
-        msg: 'success',
-        class: classes,
-        list: homeList.map((item: any) => ({
-          vod_id: `${item.id}$${encodeURIComponent(item.title || '')}`,
-          vod_name: item.title,
-          vod_pic: item.poster ? `${origin}/api/image-proxy?url=${encodeURIComponent(item.poster)}` : '',
-          vod_year: item.year || '',
-          vod_remarks: item.rate || '',
-        })),
-      },
-      {
-        headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=0`,
-        },
-      }
-    );
+    let doubanType = 'movie';
+    let doubanTag = '热门';
+
+    if (t === '国产剧') {
+      doubanType = 'tv';
+      doubanTag = '国产剧';
+    } else if (t === '综艺') {
+      doubanType = 'tv';
+      doubanTag = '综艺';
+    } else if (t === '动漫') {
+      doubanType = 'tv';
+      doubanTag = '动漫';
+    } else {
+      doubanType = 'movie';
+      doubanTag = '热门';
+    }
+
+    const subjects = await fetchDoubanData(doubanType, doubanTag, page, limit);
+
+    const list = subjects.map((item: any) => {
+      const rawCover = item.cover || item.pic || '';
+      const formattedPic = rawCover
+        ? `${rawCover}@Referer=https://movie.douban.com/@User-Agent=Mozilla/5.0`
+        : '';
+
+      return {
+        vod_id: item.title,
+        vod_name: item.title,
+        vod_pic: formattedPic,
+        vod_remarks: item.rate ? `⭐ ${item.rate}` : '热门',
+      };
+    });
+
+    return NextResponse.json({
+      page: page,
+      pagecount: 20,
+      limit: limit,
+      total: 1200,
+      class: classCategories,
+      list: list,
+    });
   } catch (e) {
-    return NextResponse.json({ code: 0, msg: 'error', class: [], list: [] }, { status: 500 });
+    console.error('TVBox categories API crash:', e);
+    return NextResponse.json({
+      class: [
+        { type_id: '电影', type_name: '热门电影' },
+        { type_id: '国产剧', type_name: '热门剧集' },
+      ],
+      list: [],
+    });
   }
 }
-
-
