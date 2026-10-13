@@ -33,7 +33,7 @@
 - 🚀 **极简部署**：一条 Docker 命令即可将完整服务跑起来，或免费部署到 Vercel、Netlify、cloudflare。
 - 👿 **智能去广告**：自动跳过视频中的切片广告（实验性）
 - 💬 **弹幕支持**：以[danmu_api](https://github.com/huangxd-/danmu_api)为后端, 需自行部署
-- 📅 **新番日历**：基于 Bangumi API 的每周新番放送时间表，需配置图片代理[bangumi-proxy](https://github.com/Yuri-NagaSaki/bangumi-proxy)
+- 📅 **新番日历**：基于 Bangumi API 的每周新番放送时间表，无法加载可自行配置代理[bangumi-proxy](https://github.com/Yuri-NagaSaki/bangumi-proxy)
 
 ### 注意：部署后项目为空壳项目，无内置播放源，需要自行收集，需要弹幕请自行部署后端
 

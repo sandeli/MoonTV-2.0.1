@@ -262,8 +262,6 @@ div[data-media-provider] video {
   background-repeat: no-repeat !important;
   background-color: #000 !important;
 }
-
-/* 隐藏移动端竖屏时的 pip 按钮 */
 .art-video-player .moontv-play-header {
   transition: opacity 0.2s ease, visibility 0.2s ease;
 }

@@ -7,6 +7,11 @@ import { getRequestOrigin } from '@/lib/request-origin';
 
 export const runtime = 'edge';
 
+/**
+ * TVBox 配置接口
+ * 参考常见 TVBox JSON 结构，最小可用字段：sites
+ * 未来可扩展 parses、lives、ads 等
+ */
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
@@ -16,6 +21,7 @@ export async function GET(request: Request) {
     const adminConfig = await getConfig();
     const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
     
+    // 本地存储模式下 un 参数可以为空
     if (storageType !== 'localstorage' && !un.trim()) {
       return NextResponse.json({ error: '缺少参数 un' }, { status: 400 });
     }
@@ -29,6 +35,7 @@ export async function GET(request: Request) {
       }
     }
 
+    // 本地模式下未提供查询参数则自动使用环境变量 PASSWORD
     if (storageType === 'localstorage' && !inputPassword) {
       inputPassword = process.env.PASSWORD || '';
     }
@@ -54,8 +61,8 @@ export async function GET(request: Request) {
       getCacheTime(),
     ]);
 
-    const origin = getRequestOrigin(request);
-
+    // 将内部 SourceConfig 映射为 TVBox 兼容的 sites
+    // 常见字段：key/api/name/type/searchable/quickSearch
     const tvboxSites = sites.map((s) => ({
       key: s.key,
       api: s.api,
@@ -66,20 +73,18 @@ export async function GET(request: Request) {
       ext: s.detail || '',
     }));
 
-    // 默认第一个主站点（让客户端首页默认渲染它为海报墙）
+    // 插入“豆瓣｜自定义”为第一个站点，指向分类接口
+    const origin = getRequestOrigin(request);
     const doubanCustomSite = {
       key: 'douban_custom',
       api: `${origin}/api/tvbox/categories`,
-      name: '豆瓣｜热门推荐',
+      name: '豆瓣｜自定义',
       type: 1,
-      searchable: 1,
-      quickSearch: 1,
-      filterable: 0,
+      searchable: 0,
       ext: '',
     };
 
     const payload: Record<string, any> = {
-      spider: '',
       sites: [doubanCustomSite, ...tvboxSites],
       parses: [],
       lives: [],
@@ -97,3 +102,5 @@ export async function GET(request: Request) {
     });
   }
 }
+
+
