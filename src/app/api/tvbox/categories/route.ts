@@ -169,22 +169,27 @@ export async function GET(request: Request) {
       });
     }
 
-    // 首页调用（无 t/wd 参数）：返回豆瓣热门电影作为海报墙，而非空列表
+    // 首页调用（无 t/wd 参数）：返回豆瓣热门推荐作为海报墙
+    // 豆瓣 recommend 接口单类返回较少，电影+剧集双路并行抓取后合并
     const origin = url.origin;
-    const homeQs = new URLSearchParams();
-    homeQs.set('kind', 'movie');
-    homeQs.set('start', '0');
-    homeQs.set('limit', '20');
-    let homeList: any[] = [];
-    try {
-      const homeResp = await fetch(`${origin}/api/douban/recommends?${homeQs.toString()}`);
-      const homeData = await homeResp.json();
-      if (Array.isArray((homeData as any).list)) {
-        homeList = (homeData as any).list;
+    const fetchHome = async (kind: string, limit: number): Promise<any[]> => {
+      const qs = new URLSearchParams();
+      qs.set('kind', kind);
+      qs.set('start', '0');
+      qs.set('limit', String(limit));
+      try {
+        const resp = await fetch(`${origin}/api/douban/recommends?${qs.toString()}`);
+        const data = await resp.json();
+        return Array.isArray((data as any).list) ? (data as any).list : [];
+      } catch {
+        return [];
       }
-    } catch {
-      homeList = [];
-    }
+    };
+    const [movieList, tvList] = await Promise.all([
+      fetchHome('movie', 15),
+      fetchHome('tv', 15),
+    ]);
+    const homeList = [...movieList, ...tvList].slice(0, 30);
 
     // 返回分类 + 首页海报墙
     return NextResponse.json(
