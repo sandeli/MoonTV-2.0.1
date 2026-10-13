@@ -156,7 +156,7 @@ export async function GET(request: Request) {
         list: list.map((item: any) => ({
           vod_id: `${item.id}$${encodeURIComponent(item.title || '')}`,
           vod_name: item.title,
-          vod_pic: item.poster,
+          vod_pic: item.poster ? `${origin}/api/image-proxy?url=${encodeURIComponent(item.poster)}` : '',
           vod_year: item.year || '',
           vod_remarks: item.rate || '',
         })),
@@ -200,7 +200,7 @@ export async function GET(request: Request) {
         list: homeList.map((item: any) => ({
           vod_id: `${item.id}$${encodeURIComponent(item.title || '')}`,
           vod_name: item.title,
-          vod_pic: item.poster,
+          vod_pic: item.poster ? `${origin}/api/image-proxy?url=${encodeURIComponent(item.poster)}` : '',
           vod_year: item.year || '',
           vod_remarks: item.rate || '',
         })),
