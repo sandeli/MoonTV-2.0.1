@@ -19,11 +19,9 @@ import { useSite } from './SiteProvider';
 import SourceSelector from './SourceSelector';
 import { ThemeToggle } from './ThemeToggle';
 import { UserMenu } from './UserMenu';
-
 interface TopNavProps {
   activePath?: string;
 }
-
 const TopNav = ({ activePath }: TopNavProps) => {
   const router = useRouter();
   const pathname = usePathname();
@@ -45,7 +43,6 @@ const TopNav = ({ activePath }: TopNavProps) => {
   const [downloadTaskCount, setDownloadTaskCount] = useState(0);
   const [simpleMode, setSimpleMode] = useState(false);
   const [isClient, setIsClient] = useState(false);
-
   useEffect(() => {
     const updateTaskCount = () => {
       if (typeof window === 'undefined') return;
@@ -70,7 +67,6 @@ const TopNav = ({ activePath }: TopNavProps) => {
       window.removeEventListener('downloadTasksUpdated', handler as EventListener);
     };
   }, []);
-
   useEffect(() => {
     setIsClient(true);
     if (typeof window !== 'undefined') {
@@ -81,7 +77,6 @@ const TopNav = ({ activePath }: TopNavProps) => {
     const unsubscribe = subscribeToDataUpdates('searchHistoryUpdated', setSearchHistory);
     return () => unsubscribe();
   }, []);
-
   useEffect(() => {
     if (activePath) {
       setActive(activePath);
@@ -90,7 +85,6 @@ const TopNav = ({ activePath }: TopNavProps) => {
       setActive(qs ? `${pathname}?${qs}` : pathname);
     }
   }, [activePath, pathname, searchParams]);
-
   useEffect(() => {
     if (pathname === '/search') {
       const q = searchParams.get('q');
@@ -99,7 +93,6 @@ const TopNav = ({ activePath }: TopNavProps) => {
       if (src) setSearchSources(src.split(','));
     }
   }, [pathname, searchParams]);
-
   const menuItems = [
     { icon: Film,         label: '电影',   href: '/douban?type=movie' },
     { icon: Tv,           label: '剧集',   href: '/douban?type=tv' },
@@ -109,7 +102,6 @@ const TopNav = ({ activePath }: TopNavProps) => {
     { icon: Clover,       label: '综艺',   href: '/douban?type=show' },
     { icon: Trophy,       label: '榜单',   href: '/ranking' },
   ];
-
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     const q = searchQuery.trim();
@@ -123,13 +115,11 @@ const TopNav = ({ activePath }: TopNavProps) => {
     setShowSuggestions(false);
     setShowHistory(false);
   };
-
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSearchQuery(e.target.value);
     setShowSuggestions(e.target.value.trim().length > 0);
     setShowHistory(false);
   };
-
   const handleSuggestionSelect = (s: string) => {
     setSearchQuery(s);
     setShowSuggestions(false);
@@ -141,18 +131,15 @@ const TopNav = ({ activePath }: TopNavProps) => {
     if (searchSources.length > 0) p.set('sources', searchSources.join(','));
     router.push(`/search?${p.toString()}`);
   };
-
   const handleInputFocus = () => {
     if (searchQuery.trim().length > 0) setShowSuggestions(true);
     setShowHistory(false);
   };
-
   const clearSearch = () => {
     setSearchQuery('');
     setShowSuggestions(false);
     searchInputRef.current?.focus();
   };
-
   const handleHistoryClick = (item: string) => {
     setSearchQuery(item);
     setShowHistory(false);
@@ -163,17 +150,14 @@ const TopNav = ({ activePath }: TopNavProps) => {
     if (searchSources.length > 0) p.set('sources', searchSources.join(','));
     router.push(`/search?${p.toString()}`);
   };
-
   const handleDeleteHistory = async (item: string, e: React.MouseEvent) => {
     e.stopPropagation();
     await deleteSearchHistory(item);
   };
-
   const handleClearAllHistory = async () => {
     await clearSearchHistory();
     setShowHistory(false);
   };
-
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (showSearchBar && searchBarRef.current &&
@@ -186,7 +170,6 @@ const TopNav = ({ activePath }: TopNavProps) => {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [showSearchBar, openFilter, showHistory]);
-
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (showHistory && historyPopupRef.current && historyButtonRef.current &&
@@ -198,7 +181,6 @@ const TopNav = ({ activePath }: TopNavProps) => {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [showHistory]);
-
   /* ★ 搜索栏：items-stretch 让源选择器与输入框等高，不再各自决定高度 */
   const searchBarContent = (
     <div
@@ -292,7 +274,6 @@ const TopNav = ({ activePath }: TopNavProps) => {
       </div>
     </div>
   );
-
   /* ★ 搜索触发按钮：使用刚性尺寸，展开/收起不影响布局 */
   const searchButton = (
     <button
@@ -306,7 +287,6 @@ const TopNav = ({ activePath }: TopNavProps) => {
       <Search className='top-nav__icon' />
     </button>
   );
-
   return (
     <>
       <header className='top-nav hidden md:block sticky top-0 z-50 w-full bg-white/80 backdrop-blur-xl border-b border-gray-200/50 shadow-sm dark:bg-gray-900/80 dark:border-gray-700/50'>
@@ -330,7 +310,6 @@ const TopNav = ({ activePath }: TopNavProps) => {
               <span className='top-nav__logo font-bold text-green-600 tracking-tight'>{siteName}</span>
             </Link>
           )}
-
           <nav className='flex items-center gap-1 flex-shrink-0'>
             {isClient && !simpleMode && (
               <Link
@@ -365,13 +344,11 @@ const TopNav = ({ activePath }: TopNavProps) => {
               );
             })}
           </nav>
-
           <div className='ml-auto flex items-center justify-end flex-shrink-0'>
             {showSearchBar && searchBarContent}
             {!showSearchBar && searchButton}
           </div>
-
-          {/* ★ 右侧三个按钮：全部使用刚性尺寸，角标用绝对定位 */}
+          {/* ========== 【已修复区域】 ========== */}
           <div className='flex items-center gap-1 flex-shrink-0 ml-2'>
             <button
               onClick={() => {
@@ -389,21 +366,21 @@ const TopNav = ({ activePath }: TopNavProps) => {
                 </span>
               )}
             </button>
-            <button
-              className='top-nav__btn-rigid text-gray-700 hover:bg-gray-100/50 hover:text-green-600 rounded-lg transition-colors duration-200 dark:text-gray-300 dark:hover:text-green-400 dark:hover:bg-gray-700/50'
-              onClick={() => document.documentElement.classList.toggle('dark')}
+            {/* 外层改为div，移除onClick，ThemeToggle自带button与切换逻辑 */}
+            <div
+              className='top-nav__btn-rigid'
               title='切换主题'
             >
               <ThemeToggle />
-            </button>
+            </div>
             <div className='top-nav__btn-rigid'>
               <UserMenu />
             </div>
           </div>
+          {/* ==================================== */}
         </div>
       </header>
     </>
   );
 };
-
 export default memo(TopNav);
