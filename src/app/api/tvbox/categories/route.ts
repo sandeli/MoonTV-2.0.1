@@ -205,6 +205,10 @@ export async function GET(request: Request) {
     const classCategories = [
       { type_id: '电影', type_name: '热门电影' },
       { type_id: '国产剧', type_name: '热播剧集' },
+      { type_id: '国产', type_name: '国产剧' },
+      { type_id: '欧美', type_name: '欧美剧' },
+      { type_id: '日剧', type_name: '日剧' },
+      { type_id: '韩剧', type_name: '韩剧' },
       { type_id: '综艺', type_name: '热门综艺' },
       { type_id: '动漫', type_name: '热门动漫' },
     ];
@@ -215,6 +219,18 @@ export async function GET(request: Request) {
     if (t === '国产剧') {
       doubanType = 'tv';
       doubanTag = '热门';
+    } else if (t === '国产') {
+      doubanType = 'tv';
+      doubanTag = '国产剧';
+    } else if (t === '欧美') {
+      doubanType = 'tv';
+      doubanTag = '欧美'; // 特殊处理：美剧+英剧双路合并，见下方
+    } else if (t === '日剧') {
+      doubanType = 'tv';
+      doubanTag = '日剧';
+    } else if (t === '韩剧') {
+      doubanType = 'tv';
+      doubanTag = '韩剧';
     } else if (t === '综艺') {
       doubanType = 'tv';
       doubanTag = '综艺';
@@ -226,7 +242,17 @@ export async function GET(request: Request) {
       doubanTag = '热门';
     }
 
-    const subjects = await fetchDoubanData(doubanType, doubanTag, page, limit);
+    let subjects: any[];
+    if (t === '欧美') {
+      // 欧美剧：美剧+英剧双路并行抓取后合并
+      const [usSubjects, ukSubjects] = await Promise.all([
+        fetchDoubanData('tv', '美剧', page, Math.ceil(limit / 2)),
+        fetchDoubanData('tv', '英剧', page, Math.ceil(limit / 2)),
+      ]);
+      subjects = [...usSubjects, ...ukSubjects];
+    } else {
+      subjects = await fetchDoubanData(doubanType, doubanTag, page, limit);
+    }
 
     const list = subjects.map((item: any) => {
       const rawCover = item.cover || item.pic || '';
@@ -256,6 +282,12 @@ export async function GET(request: Request) {
       class: [
         { type_id: '电影', type_name: '热门电影' },
         { type_id: '国产剧', type_name: '热播剧集' },
+        { type_id: '国产', type_name: '国产剧' },
+        { type_id: '欧美', type_name: '欧美剧' },
+        { type_id: '日剧', type_name: '日剧' },
+        { type_id: '韩剧', type_name: '韩剧' },
+        { type_id: '综艺', type_name: '热门综艺' },
+        { type_id: '动漫', type_name: '热门动漫' },
       ],
       list: [],
     });
