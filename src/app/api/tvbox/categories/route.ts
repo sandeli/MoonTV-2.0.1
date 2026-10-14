@@ -204,7 +204,7 @@ export async function GET(request: Request) {
     // =========================================================================
     const classCategories = [
       { type_id: '电影', type_name: '热门电影' },
-      { type_id: '国产剧', type_name: '热门剧集' },
+      { type_id: '国产剧', type_name: '热播剧集' },
       { type_id: '综艺', type_name: '热门综艺' },
       { type_id: '动漫', type_name: '热门动漫' },
     ];
@@ -214,7 +214,7 @@ export async function GET(request: Request) {
 
     if (t === '国产剧') {
       doubanType = 'tv';
-      doubanTag = '国产剧';
+      doubanTag = '热门';
     } else if (t === '综艺') {
       doubanType = 'tv';
       doubanTag = '综艺';
@@ -255,7 +255,7 @@ export async function GET(request: Request) {
     return NextResponse.json({
       class: [
         { type_id: '电影', type_name: '热门电影' },
-        { type_id: '国产剧', type_name: '热门剧集' },
+        { type_id: '国产剧', type_name: '热播剧集' },
       ],
       list: [],
     });
