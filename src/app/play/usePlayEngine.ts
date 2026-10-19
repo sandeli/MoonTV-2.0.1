@@ -957,12 +957,22 @@ export function usePlayEngine() {
       setVideoDoubanId(detailData.douban_id || 0);
       setDetail(detailData);
 
-      // 传入的起始集数超出本源可用集数范围时，直接定位到最后一集（而非回到第一集）
+      // 传入的起始集数超出本源可用集数范围时，直接定位到最后一集（而非回到第一集）。
+      // 以 URL 的 ep 为准，避免依赖可能尚未写入的 state / 播放记录。
+      const requestedEp = Number(
+        new URLSearchParams(window.location.search).get('ep')
+      );
+      const requestedIndex =
+        Number.isInteger(requestedEp) && requestedEp >= 1
+          ? requestedEp - 1
+          : currentEpisodeIndex;
       if (
         detailData.episodes.length > 0 &&
-        currentEpisodeIndex >= detailData.episodes.length
+        (requestedIndex < 0 || requestedIndex >= detailData.episodes.length)
       ) {
-        setCurrentEpisodeIndex(detailData.episodes.length - 1);
+        setCurrentEpisodeIndex(
+          requestedIndex < 0 ? 0 : detailData.episodes.length - 1
+        );
       }
 
       // 规范 URL 参数
@@ -1300,8 +1310,12 @@ export function usePlayEngine() {
       // 尝试跳转到当前正在播放的集数
       let targetIndex = currentEpisodeIndex;
 
-      // 如果当前集数超出新源的范围，则跳转到第一集
-      if (!newDetail.episodes || targetIndex >= newDetail.episodes.length) {
+      // 集数越界时夹取：大于新源最大集数则跳转最后一集，负数则回到第一集
+      if (!newDetail.episodes || newDetail.episodes.length === 0) {
+        targetIndex = 0;
+      } else if (targetIndex >= newDetail.episodes.length) {
+        targetIndex = newDetail.episodes.length - 1;
+      } else if (targetIndex < 0) {
         targetIndex = 0;
       }
 

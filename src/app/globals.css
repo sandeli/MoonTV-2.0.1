@@ -121,6 +121,19 @@
   height: var(--nav-icon);
 }
 
+/* ★ 源选择器按钮（导航栏紧凑版）：与搜索框等高，随导航栏等比缩放 */
+.top-nav__source-btn {
+  height: var(--nav-search-h);
+  padding-left: calc(var(--nav-search-h) * 0.3333);
+  padding-right: calc(var(--nav-search-h) * 0.3333);
+  gap: calc(var(--nav-search-h) * 0.1111);
+}
+.top-nav__source-btn > svg {
+  width: var(--nav-icon);
+  height: var(--nav-icon);
+  flex-shrink: 0;
+}
+
 .top-nav__searchbox::placeholder {
   font-size: calc(var(--nav-search-text) - 1px);
   color: rgb(156 163 175);

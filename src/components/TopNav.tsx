@@ -160,6 +160,9 @@ const TopNav = ({ activePath }: TopNavProps) => {
   };
   useEffect(() => {
     const handler = (e: MouseEvent) => {
+      // 搜索源设置弹窗通过 Portal 挂在 body 上，点击其内部不应关闭搜索栏
+      const target = e.target as Element | null;
+      if (target?.closest?.('[data-source-settings-modal]')) return;
       if (showSearchBar && searchBarRef.current &&
           !searchBarRef.current.contains(e.target as Node)) {
         setShowSearchBar(false);
