@@ -441,7 +441,12 @@ export const UserMenu: React.FC = () => {
     // 简洁模式变化时关闭设置并刷新页面
     setIsSettingsOpen(false);
     setTimeout(() => {
-      window.location.reload();
+      // 开启简洁模式时回到首页，避免停留在当前子页面
+      if (value && pathname !== '/') {
+        window.location.href = '/';
+      } else {
+        window.location.reload();
+      }
     }, 100);
   };
 
