@@ -65,6 +65,7 @@ import {
 import { triggerGlobalError } from '@/components/GlobalErrorIndicator';
 
 import { wrapArtplayerPluginDanmuku } from './danmuku-live-font-size';
+import { bindDeferredProgressSeek } from './deferred-progress-seek';
 import { useVideoActions } from './hooks/useVideoActions';
 import { useWakeLock } from './hooks/useWakeLock';
 import {
@@ -2506,6 +2507,8 @@ export function usePlayEngine() {
           },
         ],
       });
+
+      bindDeferredProgressSeek(artPlayerRef.current);
 
       const playerEl =
         (artPlayerRef.current.template?.$player as HTMLElement | undefined) ||
