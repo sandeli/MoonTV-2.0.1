@@ -58,7 +58,7 @@ export interface PrefetchOptions {
   horizonSeconds?: number;
   /** 回看保护时长（秒），默认 30 */
   lookBehindSeconds?: number;
-  /** 并发数，默认 3（上限 4）：并发太高会抢播放的带宽 */
+  /** 覆盖缓存模式的并发数（上限 32）：并发太高会抢播放的带宽 */
   concurrency?: number;
   /** 覆盖 settings.useProxy */
   useProxy?: boolean;
@@ -147,6 +147,7 @@ function indexAtTime(cumulative: number[], time: number): number {
 
 export class VideoPrefetcher {
   private controller: AbortController | null = null;
+  private pendingRuns = new Set<Promise<void>>();
   private episodeKey: string | null = null;
   /** 本轮队列使用的码率档位（画面高度），null 表示"最高带宽" */
   private preferredHeight: number | null = null;
@@ -241,7 +242,15 @@ export class VideoPrefetcher {
     );
     this.windowTo = requestedTo;
 
-    void this.run(options, settings, controller.signal);
+    const run = this.run(options, settings, controller.signal);
+    this.pendingRuns.add(run);
+    void run.finally(() => this.pendingRuns.delete(run));
+  }
+
+  /** 中止并等待在途写入完成，避免清空后旧任务重新写回缓存。 */
+  async stopAndWait(): Promise<void> {
+    this.stop();
+    await Promise.allSettled(Array.from(this.pendingRuns));
   }
 
   /** 完整停止并重置（切集、换源、卸载时调用） */
@@ -303,7 +312,10 @@ export class VideoPrefetcher {
     signal: AbortSignal
   ): Promise<void> {
     const useProxy = options.useProxy ?? settings.useProxy;
-    const concurrency = Math.max(1, Math.min(4, options.concurrency ?? 3));
+    const concurrency = Math.max(
+      1,
+      Math.min(32, Math.round(options.concurrency ?? settings.concurrency))
+    );
     const lookBehind = Math.max(0, options.lookBehindSeconds ?? 30);
 
     const horizonSeconds = options.horizonSeconds ?? settings.horizonSeconds;
@@ -431,7 +443,9 @@ export class VideoPrefetcher {
         const cacheKey = buildSegmentCacheKey(task.tsUrlList[segmentIndex], useProxy);
 
         try {
-          if (await hasCachedSegment(cacheKey)) {
+          const alreadyCached = await hasCachedSegment(cacheKey);
+          if (signal.aborted) return;
+          if (alreadyCached) {
             cached += 1;
             if (segmentIndex > maxCachedIndex) maxCachedIndex = segmentIndex;
             void touchMeta(cacheKey);
@@ -458,12 +472,14 @@ export class VideoPrefetcher {
           const buffer = await response.arrayBuffer();
           const costMs = Math.max(1, Date.now() - startedAt);
 
+          if (signal.aborted) return;
           const putResult = await putCachedSegmentResilient(
             cacheKey,
             buffer,
             response.headers.get('Content-Type'),
             settings
           );
+          if (signal.aborted) return;
           if (putResult === 'quota') {
             storageFull = true;
             return;

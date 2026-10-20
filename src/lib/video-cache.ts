@@ -50,6 +50,12 @@ export const UNLIMITED_HORIZON_SECONDS = 0;
 export interface CacheSettings {
   /** 总开关 */
   enabled: boolean;
+  /** 切换集数时清理缓存，保留当前集与下一集预热 */
+  autoClearOnEpisodeChange: boolean;
+  /** 分片下载并发数，范围 1-32 */
+  concurrency: number;
+  concurrencyMode: 'low' | 'medium' | 'high' | 'custom';
+  customConcurrency: number;
   /**
    * 前向缓存目标时长（秒）。
    *
@@ -66,6 +72,10 @@ export interface CacheSettings {
 
 export const DEFAULT_CACHE_SETTINGS: CacheSettings = {
   enabled: false,
+  autoClearOnEpisodeChange: false,
+  concurrency: 3,
+  concurrencyMode: 'low',
+  customConcurrency: 3,
   // 默认不设时间上限：暂停后一直往后缓存，直到片尾或触发字节上限淘汰
   horizonSeconds: UNLIMITED_HORIZON_SECONDS,
   maxBytesPerEpisode: 800 * 1024 * 1024,
@@ -101,7 +111,34 @@ export function normalizeCacheSettings(input: unknown): CacheSettings {
   const settings: CacheSettings = { ...DEFAULT_CACHE_SETTINGS };
 
   if (typeof raw.enabled === 'boolean') settings.enabled = raw.enabled;
+  if (typeof raw.autoClearOnEpisodeChange === 'boolean') {
+    settings.autoClearOnEpisodeChange = raw.autoClearOnEpisodeChange;
+  }
   if (typeof raw.useProxy === 'boolean') settings.useProxy = raw.useProxy;
+
+  const concurrency = clampNumber(raw.concurrency, 1, 32);
+  if (concurrency !== undefined) settings.concurrency = Math.round(concurrency);
+  const customConcurrency = clampNumber(raw.customConcurrency, 1, 32);
+  settings.customConcurrency =
+    customConcurrency === undefined
+      ? settings.concurrency
+      : Math.round(customConcurrency);
+  // 兼容旧配置：非预设并发数量归入自定义模式。
+  const mode = raw.concurrencyMode;
+  settings.concurrencyMode =
+    mode === 'low' || mode === 'medium' || mode === 'high' || mode === 'custom'
+      ? mode
+      : settings.concurrency === 3
+      ? 'low'
+      : settings.concurrency === 6
+      ? 'medium'
+      : settings.concurrency === 9
+      ? 'high'
+      : 'custom';
+  settings.concurrency =
+    settings.concurrencyMode === 'custom'
+      ? settings.customConcurrency
+      : { low: 3, medium: 6, high: 9 }[settings.concurrencyMode];
 
   const horizon = clampNumber(raw.horizonSeconds, 0, 7200);
   if (horizon !== undefined) {
@@ -432,7 +469,36 @@ export async function enforceQuota(
   return removed;
 }
 
-export async function clearVideoCache(): Promise<void> {
+export async function clearVideoCache(
+  keepEpisodeKeys: readonly string[] = []
+): Promise<void> {
+  if (keepEpisodeKeys.length > 0) {
+    const keep = new Set(keepEpisodeKeys);
+    const records = await metaStore.all();
+    const preservedKeys = new Set(
+      records
+        .filter((record) => keep.has(record.episodeKey))
+        .flatMap((record) => getCacheKeyVariants(record.key))
+    );
+    const cache = await openVideoCache();
+    if (cache) {
+      const requests = await cache.keys();
+      await Promise.all(
+        requests
+          .filter((request) => !preservedKeys.has(request.url))
+          .map((request) => cache.delete(request))
+      );
+    }
+    await Promise.all(
+      records
+        .filter((record) => !keep.has(record.episodeKey))
+        .map(async (record) => {
+          await metaStore.del(record.key);
+          lastTouchAt.delete(record.key);
+        })
+    );
+    return;
+  }
   try {
     await caches.delete(VIDEO_CACHE_NAME);
   } catch {

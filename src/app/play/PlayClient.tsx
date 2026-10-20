@@ -16,6 +16,7 @@ import PageLayout from '@/components/PageLayout';
 import { PlayerOverlayHeader } from './components/PlayerOverlayHeader';
 import { ErrorView, LoadingView, VideoLoadingMask } from './components/PlayStatusView';
 import { VideoDetailPanel } from './components/VideoDetailPanel';
+import { formatTime } from './play-utils';
 import { usePlayEngine } from './usePlayEngine';
 
 /** 避免点到浮层时把点击传到 ArtPlayer（会误触发播放/暂停） */
@@ -54,6 +55,7 @@ export default function PlayClient() {
     // 播放器
     artRef,
     playerHost,
+    preview,
     isVideoLoading,
     videoLoadingStage,
     setLoading,
@@ -139,6 +141,35 @@ export default function PlayClient() {
                             : ''
                         }
                       />
+                      {/* 进度条悬停预览：跟随鼠标，抽帧图 + 时间点 */}
+                      {preview?.visible && (
+                        <div
+                          className='moontv-progress-preview pointer-events-none absolute z-40'
+                          style={{
+                            left: `clamp(calc(5rem + 8px), ${preview.left}%, calc(100% - 5rem - 8px))`,
+                            bottom: 'calc(var(--art-bottom-height, 52px) - 16px)',
+                            transform: 'translateX(-50%)',
+                          }}
+                        >
+                          <div className='relative h-[90px] w-40 overflow-hidden rounded-md bg-black shadow-xl ring-1 ring-white/20'>
+                            {preview.image ? (
+                              <img
+                                src={preview.image}
+                                alt=''
+                                className='block h-full w-full max-w-none object-contain'
+                                draggable={false}
+                              />
+                            ) : (
+                              <div className='flex h-full w-full items-center justify-center bg-black/60 text-xs text-white/40'>
+                                加载中…
+                              </div>
+                            )}
+                            <span className='absolute bottom-1 left-1/2 -translate-x-1/2 rounded bg-black/75 px-1.5 py-0.5 text-xs font-medium tabular-nums text-white'>
+                              {formatTime(preview.time)}
+                            </span>
+                          </div>
+                        </div>
+                      )}
                       {/* 弹幕选择器 / 缓存管理 / 提示：挂进播放器节点，网页全屏与原生全屏都能看见 */}
                       {showDanmakuSelector && (
                         <div

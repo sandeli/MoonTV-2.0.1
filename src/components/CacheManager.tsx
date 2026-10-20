@@ -9,6 +9,8 @@ import {
   deleteEpisodeCache,
   getCacheSummary,
   getEpisodeCacheStats,
+  loadCacheSettings,
+  saveCacheSettings,
 } from '@/lib/video-cache';
 
 function formatBytes(bytes: number): string {
@@ -66,6 +68,7 @@ export default function CacheManager({ isOpen, onClose }: CacheManagerProps) {
   const [episodes, setEpisodes] = useState<EpisodeCacheStat[]>([]);
   const [totalBytes, setTotalBytes] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [autoClear, setAutoClear] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -82,7 +85,10 @@ export default function CacheManager({ isOpen, onClose }: CacheManagerProps) {
   }, []);
 
   useEffect(() => {
-    if (isOpen) void refresh();
+    if (isOpen) {
+      setAutoClear(loadCacheSettings().autoClearOnEpisodeChange);
+      void refresh();
+    }
   }, [isOpen, refresh]);
 
   if (!isOpen) return null;
@@ -116,6 +122,37 @@ export default function CacheManager({ isOpen, onClose }: CacheManagerProps) {
             aria-label='关闭'
           >
             <X className='h-5 w-5' />
+          </button>
+        </div>
+
+        <div className='flex items-center justify-between gap-4 border-b border-gray-200/60 px-5 py-3 dark:border-gray-700/60'>
+          <div>
+            <div className='text-sm text-gray-900 dark:text-gray-100'>
+              切集自动清空
+            </div>
+            <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+              切换集数时清理其他缓存，保留当前集和下一集预热
+            </p>
+          </div>
+          <button
+            type='button'
+            role='switch'
+            aria-checked={autoClear}
+            aria-label='切集自动清空'
+            onClick={() => {
+              const enabled = !autoClear;
+              saveCacheSettings({ autoClearOnEpisodeChange: enabled });
+              setAutoClear(enabled);
+            }}
+            className={`relative h-7 w-12 shrink-0 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-800 ${
+              autoClear ? 'bg-[#56c267]' : 'bg-gray-300 dark:bg-gray-600'
+            }`}
+          >
+            <span
+              className={`absolute left-0.5 top-0.5 h-6 w-6 rounded-full bg-white shadow-sm transition-transform ${
+                autoClear ? 'translate-x-5' : 'translate-x-0'
+              }`}
+            />
           </button>
         </div>
 
