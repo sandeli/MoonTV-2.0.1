@@ -35,10 +35,12 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     }
   };
 
-  const finish = (commit: boolean) => {
+  const finish = (commit: boolean, keepControls = true) => {
     if (!drag) return;
     drag = null;
     touchId = null;
+    // The show setter also restarts Artplayer's normal auto-hide countdown.
+    if (keepControls && !art.isLock) art.controls.show = true;
     if (commit && Number.isFinite(art.duration) && art.duration > 0) {
       art.seek = ratio * art.duration;
     } else {
@@ -53,6 +55,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     event.stopImmediatePropagation();
     event.preventDefault();
     drag = 'mouse';
+    art.controls.show = true;
     updatePosition(event.clientX, event.clientY, event);
   };
   const onMouseMove = (event: MouseEvent) => {
@@ -73,6 +76,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     const touch = event.touches[0];
     touchId = touch.identifier;
     drag = 'touch';
+    art.controls.show = true;
     updatePosition(touch.clientX, touch.clientY, event);
   };
   const onTouchMove = (event: TouchEvent) => {
@@ -114,6 +118,10 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     art.emit('setBar', 'played', ratio);
     restoringBar = false;
   };
+  const onControl = (visible: boolean) => {
+    // Auto-hide is driven by video:timeupdate even when a finger holds still.
+    if (!visible && drag && !art.isLock) art.controls.show = true;
+  };
 
   progress.addEventListener('mousedown', onMouseDown, true);
   progress.addEventListener('touchstart', onTouchStart, {
@@ -131,9 +139,10 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
   doc.addEventListener('touchcancel', onCancel, true);
   win?.addEventListener('blur', onCancel);
   art.on('setBar', onSetBar);
+  art.on('control', onControl);
 
   const cleanup = () => {
-    finish(false);
+    finish(false, false);
     progress.removeEventListener('mousedown', onMouseDown, true);
     progress.removeEventListener('touchstart', onTouchStart, true);
     progress.removeEventListener('click', onClick, true);
@@ -144,6 +153,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     doc.removeEventListener('touchcancel', onCancel, true);
     win?.removeEventListener('blur', onCancel);
     art.off('setBar', onSetBar);
+    art.off('control', onControl);
     art.off('destroy', cleanup);
   };
   art.on('destroy', cleanup);
