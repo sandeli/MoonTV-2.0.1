@@ -8,6 +8,7 @@ import CryptoJS from 'crypto-js';
 
 import { inferHeightFromBitrate } from './hls-quality';
 import { StreamingTransmuxer, transmuxTSToMP4 } from './mp4-transmuxer';
+import { parseByteRange, type SegmentByteRange } from './video-byte-range';
 
 export type StreamSaverMode = 'disabled' | 'service-worker' | 'file-system';
 
@@ -63,6 +64,7 @@ export interface M3U8Task {
   title: string;
   type: 'TS' | 'MP4';
   tsUrlList: string[];
+  segmentByteRanges?: Array<SegmentByteRange | undefined>;
   finishList: Array<{ title: string; status: '' | 'downloading' | 'success' | 'error'; retryCount?: number }>;
   downloadIndex: number;
   finishNum: number;
@@ -252,6 +254,7 @@ export async function parseM3U8(
     title: extractTitleFromUrl(url),
     type: 'TS',
     tsUrlList: [],
+    segmentByteRanges: [],
     finishList: [],
     downloadIndex: 0,
     finishNum: 0,
@@ -275,13 +278,29 @@ export async function parseM3U8(
   // 提取 ts 视频片段地址和每个片段的时长
   const lines = m3u8Str.split('\n');
   let lastDuration: number | null = null;
-  for (const line of lines) {
+  let pendingByteRange: string | undefined;
+  let previousUrl: string | undefined;
+  let previousRange: SegmentByteRange | undefined;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
     if (line.startsWith('#EXTINF:')) {
       lastDuration = parseFloat(line.split('#EXTINF:')[1]);
       task.durationSecond += lastDuration;
+    } else if (line.startsWith('#EXT-X-BYTERANGE:')) {
+      pendingByteRange = line.slice('#EXT-X-BYTERANGE:'.length);
     } else if (/^[^#]/.test(line) && line.trim()) {
       const tsUrl = applyURL(line.trim(), url);
+      const range = pendingByteRange === undefined
+        ? undefined
+        : parseByteRange(
+            pendingByteRange,
+            previousUrl === tsUrl ? previousRange?.end : undefined
+          );
       task.tsUrlList.push(tsUrl);
+      task.segmentByteRanges?.push(range);
+      previousUrl = tsUrl;
+      previousRange = range;
+      pendingByteRange = undefined;
       task.finishList.push({ title: line.trim(), status: '' });
       // 记录每个片段的时长
       task.segmentDurations.push(lastDuration ?? 0);

@@ -10,6 +10,8 @@
  *   3. 跨域片段经 SW 拦截拿到的是 opaque response，cache.put 存不了内容。
  */
 
+import { type SegmentByteRange } from './video-byte-range';
+
 /** 片段响应体的 Cache Storage 桶名 */
 export const VIDEO_CACHE_NAME = 'moontv-video-v1';
 
@@ -639,9 +641,19 @@ export function normalizeSegmentUrl(url: string): string {
  *   的 Referer / CORS 校验；
  * - `useProxy = false`：直接用源站绝对 URL 作为键，省掉服务端带宽。
  */
-export function buildSegmentCacheKey(segmentUrl: string, useProxy = true): string {
+export function buildSegmentCacheKey(
+  segmentUrl: string,
+  useProxy = true,
+  range?: SegmentByteRange
+): string {
   const normalized = normalizeSegmentUrl(segmentUrl);
-  return useProxy ? `/api/m3u8?url=${encodeURIComponent(normalized)}` : normalized;
+  const key = useProxy ? `/api/m3u8?url=${encodeURIComponent(normalized)}` : normalized;
+  if (!range) return key;
+  // A synthetic query belongs only to Cache Storage, never to the CDN request.
+  const url = new URL(key, 'https://cache.invalid');
+  url.hash = '';
+  url.searchParams.set('__moontv_range', `${range.start}-${range.end}`);
+  return useProxy ? `${url.pathname}${url.search}` : url.href;
 }
 
 /* ------------------------------------------------------------------ */

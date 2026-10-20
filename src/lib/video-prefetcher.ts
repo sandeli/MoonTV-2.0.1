@@ -11,6 +11,7 @@
  */
 
 import { parseM3U8 } from './m3u8-downloader';
+import { byteRangeHeader, readByteRangeResponse } from './video-byte-range';
 import {
   type CacheSettings,
   buildSegmentCacheKey,
@@ -348,18 +349,6 @@ export class VideoPrefetcher {
       return;
     }
 
-    // EXT-X-BYTERANGE 场景下多个片段共用同一 URL，URL 不能作为缓存键。
-    // 支持它需要把 (url, rangeStart, rangeEnd) 一起编码进 key，此处直接降级。
-    if (new Set(task.tsUrlList).size !== task.tsUrlList.length) {
-      this.controller = null;
-      this.emit(
-        options,
-        { state: 'error', message: '该播放列表使用字节范围分片，暂不支持预缓存' },
-        true
-      );
-      return;
-    }
-
     const cumulative = toCumulative(task.segmentDurations);
     const durationsUsable = task.durationSecond > 0 && cumulative[cumulative.length - 1] > 0;
 
@@ -440,7 +429,9 @@ export class VideoPrefetcher {
         if (slot >= queue.length) return;
 
         const segmentIndex = queue[slot];
-        const cacheKey = buildSegmentCacheKey(task.tsUrlList[segmentIndex], useProxy);
+        const range = task.segmentByteRanges?.[segmentIndex];
+        const requestUrl = buildSegmentCacheKey(task.tsUrlList[segmentIndex], useProxy);
+        const cacheKey = buildSegmentCacheKey(task.tsUrlList[segmentIndex], useProxy, range);
 
         try {
           const alreadyCached = await hasCachedSegment(cacheKey);
@@ -457,10 +448,11 @@ export class VideoPrefetcher {
           }
 
           const startedAt = Date.now();
-          const response = await fetch(cacheKey, {
+          const response = await fetch(requestUrl, {
             signal,
             credentials: 'omit',
             cache: 'no-store',
+            headers: range ? { Range: byteRangeHeader(range) } : undefined,
           });
           if (!response.ok) {
             this.emit(options, {
@@ -469,7 +461,7 @@ export class VideoPrefetcher {
             continue;
           }
 
-          const buffer = await response.arrayBuffer();
+          const buffer = await readByteRangeResponse(response, range);
           const costMs = Math.max(1, Date.now() - startedAt);
 
           if (signal.aborted) return;

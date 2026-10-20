@@ -77,6 +77,40 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    const range = request.headers.get('Range');
+    if (range) {
+      // Forward a single explicit range without buffering the entire source file.
+      const match = /^bytes=(\d+)-(\d+)$/.exec(range);
+      const start = Number(match?.[1]);
+      const end = Number(match?.[2]);
+      if (
+        !match ||
+        !Number.isSafeInteger(start) ||
+        !Number.isSafeInteger(end) ||
+        end < start
+      ) {
+        return NextResponse.json({ error: '无效的 Range 请求' }, { status: 400 });
+      }
+      const response = await fetch(url, {
+        headers: { Range: range, 'Accept-Encoding': 'identity' },
+        signal: request.signal,
+        cache: 'no-store',
+      });
+      const headers = new Headers({
+        'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream',
+        'Cache-Control': 'no-store',
+        Vary: 'Range',
+      });
+      for (const name of ['Content-Range', 'Content-Length', 'Accept-Ranges']) {
+        const value = response.headers.get(name);
+        if (value) headers.set(name, value);
+      }
+      return new NextResponse(response.body, {
+        status: response.status,
+        headers,
+      });
+    }
+
     const data = await downloadTsSegment(url);
     
     return new NextResponse(data, {
