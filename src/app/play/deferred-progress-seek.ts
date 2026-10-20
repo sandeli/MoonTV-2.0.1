@@ -1,5 +1,13 @@
 import type Artplayer from 'artplayer';
 
+export const PROGRESS_PREVIEW_MOVE = 'moontv-progress-preview-move';
+export const PROGRESS_PREVIEW_END = 'moontv-progress-preview-end';
+
+export interface ProgressPreviewMove {
+  ratio: number;
+  input: 'mouse' | 'touch';
+}
+
 /** Keep playback running while scrubbing; commit the selected time on release. */
 export function bindDeferredProgressSeek(art: Artplayer): () => void {
   const progress = art.template.$progress;
@@ -17,6 +25,14 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     const offset = art.isRotate ? clientY - rect.top : clientX - rect.left;
     ratio = Math.min(1, Math.max(0, offset / size));
     art.emit('setBar', 'played', ratio, event);
+    // Touch events are intercepted here, so notify previews before returning.
+    if (drag) {
+      progress.dispatchEvent(
+        new CustomEvent<ProgressPreviewMove>(PROGRESS_PREVIEW_MOVE, {
+          detail: { ratio, input: drag },
+        })
+      );
+    }
   };
 
   const finish = (commit: boolean) => {
@@ -28,6 +44,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     } else {
       art.emit('setBar', 'played', art.played);
     }
+    progress.dispatchEvent(new CustomEvent(PROGRESS_PREVIEW_END));
   };
 
   const onMouseDown = (event: MouseEvent) => {
@@ -116,7 +133,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
   art.on('setBar', onSetBar);
 
   const cleanup = () => {
-    drag = null;
+    finish(false);
     progress.removeEventListener('mousedown', onMouseDown, true);
     progress.removeEventListener('touchstart', onTouchStart, true);
     progress.removeEventListener('click', onClick, true);

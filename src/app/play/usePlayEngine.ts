@@ -65,7 +65,12 @@ import {
 import { triggerGlobalError } from '@/components/GlobalErrorIndicator';
 
 import { wrapArtplayerPluginDanmuku } from './danmuku-live-font-size';
-import { bindDeferredProgressSeek } from './deferred-progress-seek';
+import {
+  bindDeferredProgressSeek,
+  PROGRESS_PREVIEW_END,
+  PROGRESS_PREVIEW_MOVE,
+  ProgressPreviewMove,
+} from './deferred-progress-seek';
 import { useVideoActions } from './hooks/useVideoActions';
 import { useWakeLock } from './hooks/useWakeLock';
 import {
@@ -2858,7 +2863,7 @@ export function usePlayEngine() {
     };
   }, [libsReady, videoUrl, blockAdEnabled]);
 
-  // 绑定进度条的 pointermove / leave，驱动浮层状态并按需抽帧。
+  // 鼠标悬停及拖动处理器共享预览；触摸抽帧串行执行，避免移动时反复取消。
   // playerHost 变化代表播放器已重建（进度条 DOM 换新），需重新绑定。
   useEffect(() => {
     if (!playerHost) return;
@@ -2867,26 +2872,68 @@ export function usePlayEngine() {
       (playerHost.querySelector('.art-progress') as HTMLElement | null);
     if (!progressEl) return;
 
-    const onPointerMove = (e: PointerEvent) => {
+    let dragging = false;
+    let touchTime: number | null = null;
+    let capturingTouch = false;
+    let capturedTouchTime: number | null = null;
+
+    const scheduleTouchCapture = () => {
+      if (
+        touchTime === null ||
+        capturingTouch ||
+        previewTimerRef.current !== null ||
+        touchTime === capturedTouchTime
+      ) {
+        return;
+      }
+      const id = previewRequestIdRef.current;
+      previewTimerRef.current = window.setTimeout(() => {
+        previewTimerRef.current = null;
+        const thumb = previewThumbnailerRef.current;
+        const time = touchTime;
+        if (!thumb || time === null) return;
+        capturingTouch = true;
+        capturedTouchTime = time;
+        thumb.capture(time).then((image) => {
+          if (id !== previewRequestIdRef.current) return;
+          capturingTouch = false;
+          // 保留上一帧直到新帧就绪；移动中的时间标签仍实时更新。
+          if (image) {
+            setPreview((p) => (p?.visible ? { ...p, image } : p));
+          }
+          scheduleTouchCapture();
+        });
+      }, 120);
+    };
+
+    const showPreview = (ratio: number, input: 'mouse' | 'touch') => {
       const duration = artPlayerRef.current?.duration || 0;
-      if (!duration) return;
-      const rect = progressEl.getBoundingClientRect();
-      if (rect.width <= 0) return;
-      const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      if (!Number.isFinite(duration) || duration <= 0) return;
       const time = ratio * duration;
+      setPreview((p) => ({
+        visible: true,
+        time,
+        left: ratio * 100,
+        image: p?.visible ? p.image : null,
+      }));
+      if (input === 'touch') {
+        touchTime = time;
+        scheduleTouchCapture();
+        return;
+      }
       // 先使已在进行中的抽帧失效，避免旧图串到新位置
       const id = ++previewRequestIdRef.current;
       previewThumbnailerRef.current?.cancel();
-      setPreview({ visible: true, time, left: ratio * 100, image: null });
 
       if (previewTimerRef.current != null) clearTimeout(previewTimerRef.current);
       previewTimerRef.current = window.setTimeout(() => {
+        previewTimerRef.current = null;
         const thumb = previewThumbnailerRef.current;
         if (!thumb) return;
         thumb.capture(time).then((image) => {
           if (id !== previewRequestIdRef.current) return;
           setPreview((p) =>
-            p && p.visible && Math.abs(p.time - time) < 0.5
+            image && p && p.visible && Math.abs(p.time - time) < 0.5
               ? { ...p, image }
               : p
           );
@@ -2894,7 +2941,11 @@ export function usePlayEngine() {
       }, 120);
     };
 
-    const onPointerLeave = () => {
+    const hidePreview = () => {
+      dragging = false;
+      touchTime = null;
+      capturedTouchTime = null;
+      capturingTouch = false;
       if (previewTimerRef.current != null) {
         clearTimeout(previewTimerRef.current);
         previewTimerRef.current = null;
@@ -2904,18 +2955,37 @@ export function usePlayEngine() {
       setPreview((p) => (p ? { ...p, visible: false } : p));
     };
 
+    const onDragMove = (event: Event) => {
+      const { ratio, input } = (event as CustomEvent<ProgressPreviewMove>).detail;
+      if (!dragging && input === 'touch') hidePreview();
+      dragging = true;
+      showPreview(ratio, input);
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      // 触摸由拖动处理器驱动，不依赖浏览器是否产生 pointermove。
+      if (e.pointerType === 'touch' || dragging) return;
+      const rect = progressEl.getBoundingClientRect();
+      const rotated = artPlayerRef.current?.isRotate;
+      const size = rotated ? rect.height : rect.width;
+      if (size <= 0) return;
+      const offset = rotated ? e.clientY - rect.top : e.clientX - rect.left;
+      showPreview(Math.min(1, Math.max(0, offset / size)), 'mouse');
+    };
+    const onPointerLeave = () => {
+      if (!dragging) hidePreview();
+    };
+
+    progressEl.addEventListener(PROGRESS_PREVIEW_MOVE, onDragMove);
+    progressEl.addEventListener(PROGRESS_PREVIEW_END, hidePreview);
     progressEl.addEventListener('pointermove', onPointerMove);
     progressEl.addEventListener('pointerleave', onPointerLeave);
 
     return () => {
+      progressEl.removeEventListener(PROGRESS_PREVIEW_MOVE, onDragMove);
+      progressEl.removeEventListener(PROGRESS_PREVIEW_END, hidePreview);
       progressEl.removeEventListener('pointermove', onPointerMove);
       progressEl.removeEventListener('pointerleave', onPointerLeave);
-      if (previewTimerRef.current != null) {
-        clearTimeout(previewTimerRef.current);
-        previewTimerRef.current = null;
-      }
-      previewRequestIdRef.current++;
-      previewThumbnailerRef.current?.cancel();
+      hidePreview();
       setPreview(null);
     };
   }, [playerHost]);
