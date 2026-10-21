@@ -156,6 +156,10 @@ function indexAtTime(cumulative: number[], time: number): number {
 export class VideoPrefetcher {
   private controller: AbortController | null = null;
   private pendingRuns = new Set<Promise<void>>();
+  private parsedPlaylist: {
+    task: Awaited<ReturnType<typeof parseM3U8>>;
+    cumulative: number[];
+  } | null = null;
   private episodeKey: string | null = null;
   /** 本轮队列使用的码率档位（画面高度），null 表示"最高带宽" */
   private preferredHeight: number | null = null;
@@ -300,7 +304,10 @@ export class VideoPrefetcher {
   stop(preserveStats = false): void {
     this.controller?.abort();
     this.controller = null;
-    if (!preserveStats) this.episodeKey = null;
+    if (!preserveStats) {
+      this.episodeKey = null;
+      this.parsedPlaylist = null;
+    }
     this.windowFrom = 0;
     this.windowTo = 0;
     this.reachedEnd = false;
@@ -370,30 +377,40 @@ export class VideoPrefetcher {
     const unlimitedHorizon = !(horizonSeconds > 0);
     const horizonTime = horizonEndTime(options.currentTime, horizonSeconds);
 
-    this.emit(options, { state: 'parsing', message: undefined }, true);
-
-    let task: Awaited<ReturnType<typeof parseM3U8>>;
-    try {
-      // 档位透传给解析器：主播放列表有多个码率时只取与当前播放一致的那一档
-      task = await parseM3U8(options.m3u8Url, 0, {
-        height: options.preferredHeight ?? null,
-        signal,
-      });
-    } catch {
+    let playlist = this.parsedPlaylist;
+    if (!playlist) {
+      this.emit(options, { state: 'parsing', message: undefined }, true);
+      let task: Awaited<ReturnType<typeof parseM3U8>>;
+      try {
+        // 档位透传给解析器：主播放列表有多个码率时只取与当前播放一致的那一档
+        task = await parseM3U8(options.m3u8Url, 0, {
+          height: options.preferredHeight ?? null,
+          signal,
+        });
+      } catch {
+        if (signal.aborted) return;
+        this.controller = null;
+        this.emit(
+          options,
+          { state: 'error', message: '播放列表解析失败' },
+          true
+        );
+        return;
+      }
       if (signal.aborted) return;
-      this.controller = null; // 置空后下一次 ensure() 会重建队列重试
-      this.emit(options, { state: 'error', message: '播放列表解析失败' }, true);
-      return;
+      if (task.tsUrlList.length === 0) {
+        this.controller = null;
+        this.emit(options, { state: 'error', message: '播放列表为空' }, true);
+        return;
+      }
+      playlist = { task, cumulative: toCumulative(task.segmentDurations) };
+      // 拖动只保留已完成的点播列表；切集、换源和换画质会通过 stop() 清除。
+      if (task.isLive === false) this.parsedPlaylist = playlist;
+    } else {
+      this.emit(options, { state: 'running', message: undefined }, true);
     }
-    if (signal.aborted) return;
 
-    if (task.tsUrlList.length === 0) {
-      this.controller = null;
-      this.emit(options, { state: 'error', message: '播放列表为空' }, true);
-      return;
-    }
-
-    const cumulative = toCumulative(task.segmentDurations);
+    const { task, cumulative } = playlist;
     const durationsUsable =
       task.durationSecond > 0 && cumulative[cumulative.length - 1] > 0;
 

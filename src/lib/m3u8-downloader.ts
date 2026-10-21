@@ -70,6 +70,8 @@ export interface M3U8Task {
   title: string;
   type: 'TS' | 'MP4';
   tsUrlList: string[];
+  /** 未结束的播放列表可能继续更新，不应长期复用解析结果。 */
+  isLive?: boolean;
   segmentByteRanges?: Array<SegmentByteRange | undefined>;
   finishList: Array<{
     title: string;
@@ -278,6 +280,7 @@ export async function parseM3U8(
     title: extractTitleFromUrl(url),
     type: 'TS',
     tsUrlList: [],
+    isLive: !/^#EXT-X-ENDLIST\s*$/m.test(m3u8Str),
     segmentByteRanges: [],
     finishList: [],
     downloadIndex: 0,
