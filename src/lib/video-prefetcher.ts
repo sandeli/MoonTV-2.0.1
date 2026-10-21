@@ -17,11 +17,12 @@ import {
   buildSegmentCacheKey,
   enforceQuota,
   ensurePersistentStorage,
+  getCachedSegmentRecords,
+  getCacheKeyVariants,
   hasCachedSegment,
   loadCacheSettings,
   metaStore,
   putCachedSegmentResilient,
-  touchMeta,
 } from './video-cache';
 
 export type PrefetchState =
@@ -36,11 +37,11 @@ export interface PrefetchStats {
   state: PrefetchState;
   /** 已就绪的片段数 */
   cached: number;
-  /** 本轮计划片段数 */
+  /** 完整播放列表的片段总数，不随跳转改变 */
   total: number;
-  /** 本轮写入字节数 */
+  /** 当前播放列表实际缓存字节数 */
   bytes: number;
-  /** 缓存已覆盖到的播放时间（秒），可直接 formatTime 展示 */
+  /** 实际已缓存片段的总时长（秒），不包含缓存间隙 */
   coverTo: number;
   message?: string;
 }
@@ -205,9 +206,10 @@ export class VideoPrefetcher {
       return;
     }
 
-    const requestedTo =
-      options.currentTime +
-      (options.horizonSeconds ?? settings.horizonSeconds);
+    const requestedTo = horizonEndTime(
+      options.currentTime,
+      options.horizonSeconds ?? settings.horizonSeconds
+    );
 
     // 窗口仍然够用的条件：
     // 1) 前向还有 60s 以上余量（避免刚排完就重启）
@@ -228,7 +230,7 @@ export class VideoPrefetcher {
       return;
     }
 
-    this.stop();
+    this.stop(sameEpisode && sameVariant);
     const controller = new AbortController();
     this.controller = controller;
     this.episodeKey = options.episodeKey;
@@ -243,7 +245,11 @@ export class VideoPrefetcher {
     );
     this.windowTo = requestedTo;
 
-    const run = this.run(options, settings, controller.signal);
+    const run = this.run(options, settings, controller.signal).catch(() => {
+      if (controller.signal.aborted) return;
+      this.controller = null;
+      this.emit(options, { state: 'error', message: '缓存存储读取失败' }, true);
+    });
     this.pendingRuns.add(run);
     void run.finally(() => this.pendingRuns.delete(run));
   }
@@ -255,10 +261,10 @@ export class VideoPrefetcher {
   }
 
   /** 完整停止并重置（切集、换源、卸载时调用） */
-  stop(): void {
+  stop(preserveStats = false): void {
     this.controller?.abort();
     this.controller = null;
-    this.episodeKey = null;
+    if (!preserveStats) this.episodeKey = null;
     this.windowFrom = 0;
     this.windowTo = 0;
     this.reachedEnd = false;
@@ -268,7 +274,7 @@ export class VideoPrefetcher {
     this.resumeWaiters = [];
     waiters.forEach((resolve) => resolve());
 
-    this.stats = { ...IDLE_STATS };
+    if (!preserveStats) this.stats = { ...IDLE_STATS };
   }
 
   /**
@@ -312,6 +318,9 @@ export class VideoPrefetcher {
     settings: CacheSettings,
     signal: AbortSignal
   ): Promise<void> {
+    // 等待已中止队列的在途写入，避免旧任务与新队列交叉更新统计。
+    await Promise.allSettled(Array.from(this.pendingRuns));
+    if (signal.aborted) return;
     const useProxy = options.useProxy ?? settings.useProxy;
     const concurrency = Math.max(
       1,
@@ -326,7 +335,7 @@ export class VideoPrefetcher {
 
     this.emit(
       options,
-      { state: 'parsing', cached: 0, total: 0, bytes: 0, coverTo: 0 },
+      { state: 'parsing', message: undefined },
       true
     );
 
@@ -337,6 +346,7 @@ export class VideoPrefetcher {
         height: options.preferredHeight ?? null,
       });
     } catch {
+      if (signal.aborted) return;
       this.controller = null; // 置空后下一次 ensure() 会重建队列重试
       this.emit(options, { state: 'error', message: '播放列表解析失败' }, true);
       return;
@@ -398,23 +408,58 @@ export class VideoPrefetcher {
 
     void ensurePersistentStorage();
 
-    this.emit(
-      options,
-      {
-        state: 'running',
-        total: queue.length,
-        cached: 0,
-        bytes: 0,
-        coverTo: 0,
-        message: undefined,
-      },
-      true
+    const segmentKeys = task.tsUrlList.map((url, index) =>
+      buildSegmentCacheKey(url, useProxy, task.segmentByteRanges?.[index])
     );
+    let lastStatsAt = 0;
+    let statsRefresh: Promise<void> | null = null;
+    const refreshStats = async (force = false): Promise<void> => {
+      if (statsRefresh) await statsRefresh;
+      if (signal.aborted || (!force && Date.now() - lastStatsAt < EMIT_INTERVAL_MS)) return;
+      lastStatsAt = Date.now();
+      statsRefresh = (async () => {
+        const records = await getCachedSegmentRecords();
+        if (signal.aborted) return;
+        const byKey = new Map(
+          records.flatMap((record) =>
+            getCacheKeyVariants(record.key).map((key) => [key, record] as const)
+          )
+        );
+        let cached = 0;
+        let bytes = 0;
+        let coverTo = 0;
+        for (let i = 0; i < segmentKeys.length; i += 1) {
+          const record = getCacheKeyVariants(segmentKeys[i])
+            .map((key) => byKey.get(key))
+            .find(Boolean);
+          if (!record) continue;
+          cached += 1;
+          bytes += record.bytes;
+          coverTo += task.segmentDurations[i] || 0;
+          // 用当前播放列表补齐旧缓存的时间信息，无需重新下载。
+          const startTime = i === 0 ? 0 : cumulative[i - 1];
+          const endTime = cumulative[i];
+          if (durationsUsable && (record.startTime !== startTime || record.endTime !== endTime)) {
+            await metaStore.put({ ...record, startTime, endTime });
+            if (signal.aborted) return;
+          }
+        }
+        this.emit(options, {
+          cached, bytes, coverTo, total: task.tsUrlList.length,
+        }, force);
+      })();
+      try {
+        await statsRefresh;
+      } finally {
+        statsRefresh = null;
+      }
+    };
+
+    await refreshStats(true);
+    if (signal.aborted) return;
+    this.emit(options, { state: 'running', message: undefined }, true);
 
     let cursor = 0;
-    let cached = 0;
-    let bytes = 0;
-    let maxCachedIndex = -1;
     let lastEvictAt = Date.now();
     /** 存储配额耗尽：淘汰也腾不出空间，继续拉分片只会白烧流量 */
     let storageFull = false;
@@ -437,13 +482,7 @@ export class VideoPrefetcher {
           const alreadyCached = await hasCachedSegment(cacheKey);
           if (signal.aborted) return;
           if (alreadyCached) {
-            cached += 1;
-            if (segmentIndex > maxCachedIndex) maxCachedIndex = segmentIndex;
-            void touchMeta(cacheKey);
-            this.emit(options, {
-              cached,
-              coverTo: durationsUsable ? cumulative[maxCachedIndex] ?? 0 : 0,
-            });
+            await refreshStats();
             continue;
           }
 
@@ -471,7 +510,8 @@ export class VideoPrefetcher {
             response.headers.get('Content-Type'),
             settings
           );
-          if (signal.aborted) return;
+          // 已经落盘的片段仍需登记元数据；新队列会等待本轮写入结束。
+          if (signal.aborted && putResult !== 'ok') return;
           if (putResult === 'quota') {
             storageFull = true;
             return;
@@ -484,20 +524,15 @@ export class VideoPrefetcher {
             title: options.title || '未知影片',
             source: options.source || '未知来源',
             index: segmentIndex + 1,
+            startTime: durationsUsable ? (segmentIndex === 0 ? 0 : cumulative[segmentIndex - 1]) : undefined,
+            endTime: durationsUsable ? cumulative[segmentIndex] : undefined,
             bytes: buffer.byteLength,
             costMs,
             lastAccess: Date.now(),
           });
 
-          cached += 1;
-          bytes += buffer.byteLength;
-          if (segmentIndex > maxCachedIndex) maxCachedIndex = segmentIndex;
-
-          this.emit(options, {
-            cached,
-            bytes,
-            coverTo: durationsUsable ? cumulative[maxCachedIndex] ?? 0 : 0,
-          });
+          if (signal.aborted) return;
+          await refreshStats();
         } catch {
           // 单个片段失败（含 abort）不影响整轮，继续下一个
           if (signal.aborted) return;
@@ -505,7 +540,9 @@ export class VideoPrefetcher {
 
         if (Date.now() - lastEvictAt > EVICT_INTERVAL_MS) {
           lastEvictAt = Date.now();
-          void enforceQuota(settings);
+          await enforceQuota(settings);
+          if (signal.aborted) return;
+          await refreshStats(true);
         }
       }
     };
@@ -515,18 +552,21 @@ export class VideoPrefetcher {
     );
     if (signal.aborted) return;
 
-    void enforceQuota(settings);
+    await enforceQuota(settings);
+    if (signal.aborted) return;
+    await refreshStats(true);
+    if (signal.aborted) return;
     if (storageFull) {
       // 用 `error` 而不是 `done`：得让 tooltip 原样显示这条 message，
       // 否则用户只会看到计数器停在某一格，不知道是磁盘写不进去了。
       this.emit(
         options,
-        { state: 'error', message: `存储空间已满，缓存 ${cached} 个片段后停止` },
+        { state: 'error', message: `存储空间已满，缓存 ${this.stats.cached} 个片段后停止` },
         true
       );
       return;
     }
-    this.emit(options, { state: 'done', message: `已缓存 ${cached} 个片段` }, true);
+    this.emit(options, { state: 'done', message: `已缓存 ${this.stats.cached} 个片段` }, true);
   }
 }
 

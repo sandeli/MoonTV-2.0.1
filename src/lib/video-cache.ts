@@ -32,6 +32,9 @@ export interface SegmentMeta {
   source?: string;
   /** 片段序号（1 基，便于排查） */
   index: number;
+  /** 片段在视频中的实际起止时间（秒），旧缓存可能没有 */
+  startTime?: number;
+  endTime?: number;
   /** 字节数 */
   bytes: number;
   /** 预取时的实际耗时(ms)，用于给 hls.js 合成 LoaderStats，避免 ABR 高估带宽 */
@@ -293,7 +296,7 @@ export async function openVideoCache(): Promise<Cache | null> {
  * 解决 cache.put 写入时某些浏览器自动把相对路径补成带 origin 的绝对 URL，
  * 导致读取侧用相对路径查不到的问题。
  */
-function getCacheKeyVariants(key: string): string[] {
+export function getCacheKeyVariants(key: string): string[] {
   const variants: string[] = [key];
   try {
     if (typeof location !== 'undefined') {
@@ -548,10 +551,62 @@ export interface EpisodeCacheStat {
   lastAccess: number;
 }
 
+export interface CachedTimeRange {
+  startTime: number;
+  endTime: number;
+  firstIndex: number;
+  lastIndex: number;
+}
+
+/** 合并相邻或重叠的实际时间段，不把未缓存的间隙计入覆盖时长。 */
+export function mergeCachedTimeRanges(
+  records: Pick<SegmentMeta, 'index' | 'startTime' | 'endTime'>[]
+): CachedTimeRange[] {
+  const sorted = records
+    .filter(
+      (record): record is { index: number; startTime: number; endTime: number } =>
+        typeof record.startTime === 'number' &&
+        typeof record.endTime === 'number' &&
+        Number.isFinite(record.startTime) &&
+        Number.isFinite(record.endTime) &&
+        record.startTime >= 0 &&
+        record.endTime > record.startTime
+    )
+    .sort((a, b) => a.startTime - b.startTime);
+  const ranges: CachedTimeRange[] = [];
+  for (const record of sorted) {
+    const previous = ranges[ranges.length - 1];
+    if (previous && record.startTime <= previous.endTime + 0.001) {
+      previous.endTime = Math.max(previous.endTime, record.endTime);
+      previous.firstIndex = Math.min(previous.firstIndex, record.index);
+      previous.lastIndex = Math.max(previous.lastIndex, record.index);
+    } else {
+      ranges.push({
+        startTime: record.startTime,
+        endTime: record.endTime,
+        firstIndex: record.index,
+        lastIndex: record.index,
+      });
+    }
+  }
+  return ranges;
+}
+
+/** 只返回仍存在于 Cache Storage 的元数据，排除已淘汰或被清空的片段。 */
+export async function getCachedSegmentRecords(): Promise<SegmentMeta[]> {
+  const cache = await openVideoCache();
+  if (!cache) return [];
+  const [records, requests] = await Promise.all([metaStore.all(), cache.keys()]);
+  const keys = new Set(requests.map((request) => request.url));
+  return records.filter((record) =>
+    getCacheKeyVariants(record.key).some((key) => keys.has(key))
+  );
+}
+
 /** 按剧集聚合已缓存内容的统计（缓存管理面板用），按最近访问倒序 */
 export async function getEpisodeCacheStats(): Promise<EpisodeCacheStat[]> {
   try {
-    const records = await metaStore.all();
+    const records = await getCachedSegmentRecords();
     const grouped = new Map<string, EpisodeCacheStat>();
     for (const record of records) {
       const stat = grouped.get(record.episodeKey);

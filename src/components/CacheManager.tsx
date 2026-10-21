@@ -5,13 +5,25 @@ import { useCallback, useEffect, useState } from 'react';
 
 import {
   type EpisodeCacheStat,
+  type SegmentMeta,
   clearVideoCache,
   deleteEpisodeCache,
-  getCacheSummary,
+  getCachedSegmentRecords,
   getEpisodeCacheStats,
   loadCacheSettings,
+  mergeCachedTimeRanges,
   saveCacheSettings,
 } from '@/lib/video-cache';
+
+function formatCacheTime(seconds: number): string {
+  const value = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  const rest = String(value % 60).padStart(2, '0');
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${rest}`
+    : `${minutes}:${rest}`;
+}
 
 function formatBytes(bytes: number): string {
   if (bytes <= 0) return '0 B';
@@ -69,18 +81,23 @@ export default function CacheManager({ isOpen, onClose }: CacheManagerProps) {
   const [totalBytes, setTotalBytes] = useState(0);
   const [loading, setLoading] = useState(false);
   const [autoClear, setAutoClear] = useState(false);
+  const [records, setRecords] = useState<SegmentMeta[]>([]);
+  const [expandedEpisode, setExpandedEpisode] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
-      const [stats, summary] = await Promise.all([
+      const [stats, segments] = await Promise.all([
         getEpisodeCacheStats(),
-        getCacheSummary(),
+        getCachedSegmentRecords(),
       ]);
       setEpisodes(stats);
-      setTotalBytes(summary.bytes);
+      setRecords(segments);
+      setTotalBytes(segments.reduce((sum, record) => sum + record.bytes, 0));
+    } catch {
+      // 暂时无法读取存储时保留上次展示结果。
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -88,6 +105,8 @@ export default function CacheManager({ isOpen, onClose }: CacheManagerProps) {
     if (isOpen) {
       setAutoClear(loadCacheSettings().autoClearOnEpisodeChange);
       void refresh();
+      const timer = window.setInterval(() => void refresh(true), 2000);
+      return () => window.clearInterval(timer);
     }
   }, [isOpen, refresh]);
 
@@ -166,18 +185,41 @@ export default function CacheManager({ isOpen, onClose }: CacheManagerProps) {
             </div>
           ) : (
             <ul className='space-y-2'>
-              {episodes.map((ep) => (
+              {episodes.map((ep) => {
+                const episodeRecords = records.filter(
+                  (record) => record.episodeKey === ep.episodeKey
+                );
+                const ranges = mergeCachedTimeRanges(episodeRecords);
+                const coveredSeconds = ranges.reduce(
+                  (sum, range) => sum + range.endTime - range.startTime, 0
+                );
+                const unknownCount = episodeRecords.filter(
+                  (record) => record.startTime === undefined || record.endTime === undefined
+                ).length;
+                return (
                 <li
                   key={ep.episodeKey}
-                  className='flex items-center justify-between rounded-lg bg-gray-50 dark:bg-gray-700/40 px-3 py-2'
+                  className='rounded-lg bg-gray-50 dark:bg-gray-700/40 px-3 py-2'
                 >
+                  <div className='flex items-center justify-between'>
                   <div className='min-w-0'>
                     <div className='truncate text-sm text-gray-800 dark:text-gray-200'>
                       {formatEpisodeCacheLabel(ep)}
                     </div>
                     <div className='text-xs text-gray-500 dark:text-gray-400 mt-0.5'>
                       {ep.segments} 片段 · {formatBytes(ep.bytes)}
+                      {coveredSeconds > 0 && ` · 已覆盖 ${formatCacheTime(coveredSeconds)}`}
                     </div>
+                    <button
+                      type='button'
+                      aria-expanded={expandedEpisode === ep.episodeKey}
+                      onClick={() => setExpandedEpisode(
+                        expandedEpisode === ep.episodeKey ? null : ep.episodeKey
+                      )}
+                      className='mt-1 text-xs text-green-600 hover:text-green-700 dark:text-green-400'
+                    >
+                      {expandedEpisode === ep.episodeKey ? '收起详情' : '缓存详情'}
+                    </button>
                   </div>
                   <button
                     onClick={() => handleDeleteEpisode(ep.episodeKey)}
@@ -187,8 +229,30 @@ export default function CacheManager({ isOpen, onClose }: CacheManagerProps) {
                   >
                     <Trash2 className='h-4 w-4' />
                   </button>
+                  </div>
+                  {expandedEpisode === ep.episodeKey && (
+                    <div className='mt-3 space-y-2 border-t border-gray-200/60 pt-2 text-xs dark:border-gray-600'>
+                      {ranges.map((range) => (
+                        <div
+                          key={`${range.startTime}-${range.endTime}`}
+                          className='flex flex-wrap justify-between gap-1 text-gray-600 dark:text-gray-300'
+                        >
+                          <span>片段 {range.firstIndex} - {range.lastIndex}</span>
+                          <span className='font-mono tabular-nums'>
+                            {formatCacheTime(range.startTime)} - {formatCacheTime(range.endTime)}
+                          </span>
+                        </div>
+                      ))}
+                      {unknownCount > 0 && (
+                        <p className='text-gray-400'>
+                          {unknownCount} 个旧片段暂无时间信息，播放该集后自动补齐
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </div>

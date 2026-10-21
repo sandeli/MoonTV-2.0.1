@@ -1924,6 +1924,7 @@ export function usePlayEngine() {
         currentTime: number,
         horizonSeconds?: number
       ) => {
+        if (artPlayerRef.current?.video?.seeking) return;
         const clearing = cacheClearPromiseRef.current;
         if (clearing) {
           const episodeIndex = currentEpisodeIndexRef.current;
@@ -1941,6 +1942,7 @@ export function usePlayEngine() {
         prefetcherRef.current.ensure({
           m3u8Url,
           currentTime,
+          lookBehindSeconds: 0,
           title: videoTitleRef.current || '未知影片',
           source:
             detailRef.current?.source_name ||
@@ -2609,8 +2611,12 @@ export function usePlayEngine() {
       // ---------------------------------------------------------------------
       // 前向预缓存：窗口维护
       // ---------------------------------------------------------------------
-      // seek 后窗口可能不再覆盖目标位置；ensure 内部会判断，窗口够用时零成本返回
+      // 跳转开始即中止旧请求，保留统计和已写入缓存；落点确定后重新排队。
+      artPlayerRef.current.on('video:seeking', () => {
+        prefetcherRef.current.stop(true);
+      });
       artPlayerRef.current.on('video:seeked', () => {
+        prefetcherRef.current.stop(true);
         ensurePrefetchCurrent(artPlayerRef.current.currentTime || 0);
       });
 
