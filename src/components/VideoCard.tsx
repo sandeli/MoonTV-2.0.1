@@ -276,49 +276,45 @@ export default function VideoCard({
     [from, actualSource, actualId, onDelete]
   );
 
-  const handleClick = useCallback(() => {
-    // 点击时不再检查收藏状态
-    // 触发加载动画
-    startLoading();
-
-    if (from === 'douban') {
-      router.push(
-        `/play?title=${encodeURIComponent(actualTitle.trim())}${
-          sanitizedYear ? `&year=${sanitizedYear}` : ''
-        }${actualSearchType ? `&stype=${actualSearchType}` : ''}`
-      );
-    } else if (actualSource && actualId) {
-      // 携带当前播放集数（1 基）：追更页传的是按标题匹配得到的当前集数，
-      // 播放页挂载时优先采用该集数开始播放，避免因换片源导致 source+id 记录缺失而回到第 1 集
-      const startEp =
-        typeof currentEpisode === 'number' &&
-        Number.isInteger(currentEpisode) &&
-        currentEpisode >= 1
-          ? `&ep=${currentEpisode}`
-          : '';
-      router.push(
-        `/play?source=${actualSource}&id=${actualId}&title=${encodeURIComponent(
-          actualTitle
-        )}${sanitizedYear ? `&year=${sanitizedYear}` : ''}${
-          isAggregate ? '&prefer=true' : ''
-        }${
-          sanitizedQuery ? `&stitle=${encodeURIComponent(sanitizedQuery)}` : ''
-        }${actualSearchType ? `&stype=${actualSearchType}` : ''}${startEp}`
-      );
+  const playbackUrl = useMemo(() => {
+    if (from !== 'douban' && (!actualSource || !actualId)) return '';
+    const params = new URLSearchParams();
+    if (from !== 'douban' && actualSource && actualId) {
+      params.set('source', actualSource);
+      params.set('id', actualId);
     }
+    params.set('title', actualTitle.trim());
+    if (sanitizedYear) params.set('year', sanitizedYear);
+    if (actualSearchType) params.set('stype', actualSearchType);
+    if (from !== 'search' && from !== 'douban' && sanitizedQuery) {
+      params.set('stitle', sanitizedQuery);
+    }
+    // Preserve resume positions for history and following cards.
+    if (
+      from !== 'douban' &&
+      typeof currentEpisode === 'number' &&
+      Number.isInteger(currentEpisode) &&
+      currentEpisode >= 1
+    ) {
+      params.set('ep', String(currentEpisode));
+    }
+    return `/play?${params.toString()}`;
   }, [
     from,
     actualSource,
     actualId,
-    router,
     actualTitle,
     sanitizedYear,
-    isAggregate,
     sanitizedQuery,
     actualSearchType,
-    startLoading,
     currentEpisode,
   ]);
+
+  const handleClick = useCallback(() => {
+    if (!playbackUrl) return;
+    startLoading();
+    router.push(playbackUrl);
+  }, [playbackUrl, router, startLoading]);
 
   const config = useMemo(() => {
     const configs = {
@@ -669,32 +665,7 @@ export default function VideoCard({
             icon: <ExternalLink size={20} />,
             color: 'default',
             onClick: () => {
-              if (from === 'douban') {
-                window.open(
-                  `/play?title=${encodeURIComponent(actualTitle.trim())}${
-                    actualYear ? `&year=${actualYear}` : ''
-                  }${actualSearchType ? `&stype=${actualSearchType}` : ''}`,
-                  '_blank'
-                );
-              } else if (actualSource && actualId) {
-                // 与主点击一致：携带当前播放集数（1 基）
-                const newTabStartEp =
-                  typeof currentEpisode === 'number' &&
-                  Number.isInteger(currentEpisode) &&
-                  currentEpisode >= 1
-                    ? `&ep=${currentEpisode}`
-                    : '';
-                window.open(
-                  `/play?source=${actualSource}&id=${actualId}&title=${encodeURIComponent(
-                    actualTitle
-                  )}${actualYear ? `&year=${actualYear}` : ''}${
-                    isAggregate ? '&prefer=true' : ''
-                  }${
-                    actualQuery ? `&stitle=${encodeURIComponent(actualQuery.trim())}` : ''
-                  }${actualSearchType ? `&stype=${actualSearchType}` : ''}${newTabStartEp}`,
-                  '_blank'
-                );
-              }
+              if (playbackUrl) window.open(playbackUrl, '_blank');
             },
           },
           ...(from !== 'douban' && !(from === 'search' && isAggregate) && actualSource && actualId

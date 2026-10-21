@@ -40,6 +40,7 @@ import {
 } from '@/lib/hls-quality';
 import { describeHlsError, PlaybackRecovery } from '@/lib/playback-recovery';
 import { getDefaultPlaybackSaveInterval } from '@/lib/playback-settings';
+import { matchesFullSearchTitle } from '@/lib/search-title';
 import { SearchResult } from '@/lib/types';
 import {
   getRequestTimeout,
@@ -928,6 +929,7 @@ export function usePlayEngine() {
       setSourceSearchError('');
 
       const aggregatedResults: SearchResult[] = [];
+      const targetYear = videoYearRef.current;
 
       try {
         // 发起流式搜索请求
@@ -966,15 +968,12 @@ export function usePlayEngine() {
                 if (data.pageResults) {
                   const filteredResults: SearchResult[] =
                     data.pageResults.filter((r: SearchResult) => {
-                      const titleMatch =
-                        r.title.trim().replace(/\s+/g, ' ').toLowerCase() ===
-                        videoTitleRef.current
-                          .trim()
-                          .replace(/\s+/g, ' ')
-                          .toLowerCase();
-                      const yearMatch = videoYearRef.current
-                        ? r.year.toLowerCase() ===
-                          videoYearRef.current.toLowerCase()
+                      const titleMatch = matchesFullSearchTitle(
+                        r.title,
+                        query
+                      );
+                      const yearMatch = targetYear
+                        ? r.year.toLowerCase() === targetYear.toLowerCase()
                         : true;
                       const typeMatch = searchType
                         ? (searchType === 'tv' && r.episodes.length > 1) ||
@@ -1089,7 +1088,7 @@ export function usePlayEngine() {
       let allResults: SearchResult[] = [];
       let hasInitialized = false; // 标记是否已经初始化过播放数据
 
-      await fetchSourcesData(videoTitle, (newResults) => {
+      await fetchSourcesData(videoTitle || searchTitle, (newResults) => {
         allResults = [...allResults, ...newResults];
 
         // 如果还没确定 detailData，就尝试找目标源

@@ -1,4 +1,5 @@
 import { API_CONFIG, ApiSite, getConfig } from '@/lib/config';
+import { getFallbackSearchQuery } from '@/lib/search-title';
 import { SearchResult } from '@/lib/types';
 import { cleanHtmlTags } from '@/lib/utils';
 
@@ -138,6 +139,38 @@ export async function* searchFromApiStream(
   timeout?: number,
   signal?: AbortSignal
 ): AsyncGenerator<SearchResult[], void, unknown> {
+  if (signal?.aborted) return;
+  // Normalize only the upstream keyword; callers retain the full query for matching.
+  const searchQuery = getFallbackSearchQuery(query) ?? query;
+  const seen = new Set<string>();
+
+  for await (const page of searchApiQuery(
+    apiSite,
+    searchQuery,
+    parallel,
+    timeout,
+    signal
+  )) {
+    if (signal?.aborted) return;
+    const results = page.filter((result) => {
+      const key = JSON.stringify([result.source, result.id]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (results.length > 0) yield results;
+  }
+}
+
+/** Search one literal keyword, including all configured pages. */
+async function* searchApiQuery(
+  apiSite: ApiSite,
+  query: string,
+  parallel = true,
+  timeout?: number,
+  signal?: AbortSignal
+): AsyncGenerator<SearchResult[], void, unknown> {
+  if (signal?.aborted) return;
   const apiUrl =
     apiSite.api + API_CONFIG.search.path + encodeURIComponent(query);
 
@@ -157,6 +190,7 @@ export async function* searchFromApiStream(
   );
 
   // 分页
+  if (signal?.aborted) return;
   const { SiteConfig } = await getConfig();
   const maxPages = SiteConfig.SearchDownstreamMaxPage;
   const pageCount = data.pagecount || 1;
@@ -171,6 +205,7 @@ export async function* searchFromApiStream(
       } | null>[] = [];
 
       for (let page = 2; page <= pagesToFetch; page++) {
+        if (signal?.aborted) return;
         const pageUrl =
           apiSite.api +
           API_CONFIG.search.pagePath
@@ -207,11 +242,13 @@ export async function* searchFromApiStream(
             !!r && r.results.length > 0
         )
         .sort((a, b) => a.page - b.page)) {
+        if (signal?.aborted) return;
         yield res.results;
       }
     } else {
       // ------------------ 顺序模式 ------------------
       for (let page = 2; page <= pagesToFetch; page++) {
+        if (signal?.aborted) return;
         const pageUrl =
           apiSite.api +
           API_CONFIG.search.pagePath
