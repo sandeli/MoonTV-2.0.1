@@ -48,7 +48,7 @@ export class PreviewThumbnailer {
     this.video = video;
 
     const hls = new Hls({
-      enableWorker: false, // 与主播放器一致：分片加载须在主线程命中 Cache Storage
+      enableWorker: true, // 后台处理预览分片，缓存 loader 仍在主线程运行
       lowLatencyMode: false,
       autoStartLoad: false,
       maxBufferLength: 1,

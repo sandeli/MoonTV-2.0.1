@@ -12,6 +12,7 @@ import {
   getSearchHistory,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
+import { matchesSearchTitle } from '@/lib/search-title';
 import { SearchResult } from '@/lib/types';
 import { getRequestTimeout } from '@/lib/utils';
 
@@ -131,12 +132,8 @@ function SearchPageClient() {
       map.set(key, arr);
     });
     return Array.from(map.entries()).sort((a, b) => {
-      const aExactMatch = a[1][0].title
-        .toLowerCase()
-        .includes(searchQuery.trim().toLowerCase());
-      const bExactMatch = b[1][0].title
-        .toLowerCase()
-        .includes(searchQuery.trim().toLowerCase());
+      const aExactMatch = matchesSearchTitle(a[1][0].title, searchQuery);
+      const bExactMatch = matchesSearchTitle(b[1][0].title, searchQuery);
       if (aExactMatch && !bExactMatch) return -1;
       if (!aExactMatch && bExactMatch) return 1;
 
@@ -204,7 +201,7 @@ function SearchPageClient() {
 
     const query = (searchParams.get('q') ?? '').trim().toLowerCase();
     const isExact = (group: SearchResult[]) =>
-      group[0].title.toLowerCase().includes(query);
+      matchesSearchTitle(group[0].title, query);
 
     const getYearValue = (group: SearchResult[]) => {
       const y = group[0].year;

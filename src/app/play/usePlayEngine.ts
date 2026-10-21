@@ -40,6 +40,7 @@ import {
 } from '@/lib/hls-quality';
 import { describeHlsError, PlaybackRecovery } from '@/lib/playback-recovery';
 import { getDefaultPlaybackSaveInterval } from '@/lib/playback-settings';
+import { matchesFullSearchTitle } from '@/lib/search-title';
 import { SearchResult } from '@/lib/types';
 import {
   getRequestTimeout,
@@ -928,6 +929,7 @@ export function usePlayEngine() {
       setSourceSearchError('');
 
       const aggregatedResults: SearchResult[] = [];
+      const targetYear = videoYearRef.current;
 
       try {
         // 发起流式搜索请求
@@ -966,15 +968,12 @@ export function usePlayEngine() {
                 if (data.pageResults) {
                   const filteredResults: SearchResult[] =
                     data.pageResults.filter((r: SearchResult) => {
-                      const titleMatch =
-                        r.title.trim().replace(/\s+/g, ' ').toLowerCase() ===
-                        videoTitleRef.current
-                          .trim()
-                          .replace(/\s+/g, ' ')
-                          .toLowerCase();
-                      const yearMatch = videoYearRef.current
-                        ? r.year.toLowerCase() ===
-                          videoYearRef.current.toLowerCase()
+                      const titleMatch = matchesFullSearchTitle(
+                        r.title,
+                        query
+                      );
+                      const yearMatch = targetYear
+                        ? r.year.toLowerCase() === targetYear.toLowerCase()
                         : true;
                       const typeMatch = searchType
                         ? (searchType === 'tv' && r.episodes.length > 1) ||
@@ -1089,7 +1088,7 @@ export function usePlayEngine() {
       let allResults: SearchResult[] = [];
       let hasInitialized = false; // 标记是否已经初始化过播放数据
 
-      await fetchSourcesData(videoTitle, (newResults) => {
+      await fetchSourcesData(videoTitle || searchTitle, (newResults) => {
         allResults = [...allResults, ...newResults];
 
         // 如果还没确定 detailData，就尝试找目标源
@@ -2177,11 +2176,8 @@ export function usePlayEngine() {
             }
             const hls = new Hls({
               debug: false, // 关闭日志
-              enableWorker: false, // 必须关闭 Worker：Fragment 加载在 Worker 里拿不到 Cache Storage，
-              // 也不会调用主线程里写了「缓存优先」的 CustomHlsLoader，
-              // 会导致 Cache Storage 里明明写满了数据但播放时全走网络。
-              // 90MB 的 maxBufferSize + Cache Storage 前向预取已经足够稳，
-              // 放弃 Worker 换缓存命中收益性价比更高。
+              // 分片处理移到 Worker；自定义 loader 仍在主线程读取缓存。
+              enableWorker: true,
 
               // VOD 场景关闭低延迟模式：LL-HLS 会主动压缩前向缓冲，与"多缓存"目标相悖
               lowLatencyMode: false,
