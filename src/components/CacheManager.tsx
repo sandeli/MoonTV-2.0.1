@@ -58,18 +58,16 @@ function normalizeSourceName(source?: string): string {
   return value;
 }
 
-function formatEpisodeCacheLabel(ep: {
-  title?: string;
+function formatEpisodeCacheMetadata(ep: {
   source?: string;
   episodeKey: string;
 }): string {
-  const title = ep.title?.trim() || '未知影片';
   const source = normalizeSourceName(ep.source);
   const episodeParts = ep.episodeKey.split(':').filter(Boolean);
   const rawEpisodeIndex = Number(episodeParts[episodeParts.length - 1]);
   const episodeNumber = Number.isNaN(rawEpisodeIndex) ? 1 : rawEpisodeIndex + 1;
 
-  return `${title} · ${source} · 第 ${episodeNumber} 集`;
+  return `${source} · 第 ${episodeNumber} 集`;
 }
 
 interface CacheManagerProps {
@@ -210,12 +208,15 @@ export default function CacheManager({ isOpen, onClose }: CacheManagerProps) {
                     key={ep.episodeKey}
                     className='rounded-lg bg-gray-50 dark:bg-gray-700/40 px-3 py-2'
                   >
-                    <div className='flex items-center justify-between'>
-                      <div className='min-w-0'>
-                        <div className='truncate text-sm text-gray-800 dark:text-gray-200'>
-                          {formatEpisodeCacheLabel(ep)}
+                    <div className='flex items-start justify-between gap-3'>
+                      <div className='min-w-0 flex-1'>
+                        <div className='whitespace-normal text-sm leading-5 text-gray-800 [overflow-wrap:anywhere] dark:text-gray-200'>
+                          {ep.title?.trim() || '未知影片'}
                         </div>
-                        <div className='text-xs text-gray-500 dark:text-gray-400 mt-0.5'>
+                        <div className='mt-1 whitespace-normal text-xs leading-5 text-gray-500 [overflow-wrap:anywhere] dark:text-gray-400'>
+                          {formatEpisodeCacheMetadata(ep)}
+                        </div>
+                        <div className='mt-0.5 whitespace-normal text-xs leading-5 text-gray-500 [overflow-wrap:anywhere] dark:text-gray-400'>
                           {ep.segments} 片段 · {formatBytes(ep.bytes)}
                           {coveredSeconds > 0 &&
                             ` · 已覆盖 ${formatCacheTime(coveredSeconds)}`}
@@ -239,7 +240,7 @@ export default function CacheManager({ isOpen, onClose }: CacheManagerProps) {
                       </div>
                       <button
                         onClick={() => handleDeleteEpisode(ep.episodeKey)}
-                        className='ml-3 shrink-0 rounded-full p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/30'
+                        className='shrink-0 rounded-full p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/30'
                         aria-label='删除该剧集缓存'
                         title='删除该剧集缓存'
                       >
