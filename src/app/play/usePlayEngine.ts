@@ -2176,11 +2176,8 @@ export function usePlayEngine() {
             }
             const hls = new Hls({
               debug: false, // 关闭日志
-              enableWorker: false, // 必须关闭 Worker：Fragment 加载在 Worker 里拿不到 Cache Storage，
-              // 也不会调用主线程里写了「缓存优先」的 CustomHlsLoader，
-              // 会导致 Cache Storage 里明明写满了数据但播放时全走网络。
-              // 90MB 的 maxBufferSize + Cache Storage 前向预取已经足够稳，
-              // 放弃 Worker 换缓存命中收益性价比更高。
+              // 分片处理移到 Worker；自定义 loader 仍在主线程读取缓存。
+              enableWorker: true,
 
               // VOD 场景关闭低延迟模式：LL-HLS 会主动压缩前向缓冲，与"多缓存"目标相悖
               lowLatencyMode: false,
