@@ -2984,7 +2984,10 @@ export function usePlayEngine() {
       setPreview((p) => ({
         visible: true,
         time,
-        left: ratio * 100,
+        left:
+          input === 'touch' || artLibRef.current?.utils?.isMobile
+            ? 50
+            : ratio * 100,
         image: p?.visible ? p.image : null,
       }));
       if (input === 'touch') {

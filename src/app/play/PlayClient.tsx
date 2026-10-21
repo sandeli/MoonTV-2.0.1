@@ -141,7 +141,7 @@ export default function PlayClient() {
                             : ''
                         }
                       />
-                      {/* 进度条悬停预览：跟随鼠标，抽帧图 + 时间点 */}
+                      {/* 进度预览：桌面跟随鼠标，移动端固定居中 */}
                       {preview?.visible && (
                         <div
                           className='moontv-progress-preview pointer-events-none absolute z-40'

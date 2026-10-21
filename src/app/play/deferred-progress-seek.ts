@@ -17,6 +17,13 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
   let touchId: number | null = null;
   let ratio = 0;
   let restoringBar = false;
+  let gesturePreview = false;
+
+  const endGesturePreview = () => {
+    if (!gesturePreview) return;
+    gesturePreview = false;
+    progress.dispatchEvent(new CustomEvent(PROGRESS_PREVIEW_END));
+  };
 
   const updatePosition = (clientX: number, clientY: number, event?: Event) => {
     const rect = progress.getBoundingClientRect();
@@ -93,6 +100,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     if (touch) updatePosition(touch.clientX, touch.clientY, event);
   };
   const onTouchEnd = (event: TouchEvent) => {
+    if (event.touches.length === 0) endGesturePreview();
     if (drag !== 'touch') return;
     const touch = Array.from(event.changedTouches).find(
       (item) => item.identifier === touchId
@@ -102,7 +110,10 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     updatePosition(touch.clientX, touch.clientY, event);
     finish(true);
   };
-  const onCancel = () => finish(false);
+  const onCancel = () => {
+    endGesturePreview();
+    finish(false);
+  };
   const onClick = (event: MouseEvent) => {
     // A release already committed the seek; do not seek again on its click.
     event.stopImmediatePropagation();
@@ -111,8 +122,28 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
       art.seek = ratio * art.duration;
     }
   };
-  const onSetBar = (type: string) => {
-    if (type !== 'played' || !drag || restoringBar) return;
+  const onSetBar = (type: string, percentage: number, event?: Event) => {
+    if (type !== 'played' || restoringBar) return;
+    if (!drag) {
+      // Artplayer emits this only for progress-changing video gestures.
+      if (
+        !art.isLock &&
+        event?.type === 'touchmove' &&
+        Number.isFinite(percentage)
+      ) {
+        gesturePreview = true;
+        art.controls.show = true;
+        progress.dispatchEvent(
+          new CustomEvent<ProgressPreviewMove>(PROGRESS_PREVIEW_MOVE, {
+            detail: {
+              ratio: Math.min(1, Math.max(0, percentage)),
+              input: 'touch',
+            },
+          })
+        );
+      }
+      return;
+    }
     // RAF/timeupdate still advance normally, but the thumb follows the drag.
     restoringBar = true;
     art.emit('setBar', 'played', ratio);
@@ -120,7 +151,8 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
   };
   const onControl = (visible: boolean) => {
     // Auto-hide is driven by video:timeupdate even when a finger holds still.
-    if (!visible && drag && !art.isLock) art.controls.show = true;
+    if (!visible && (drag || gesturePreview) && !art.isLock)
+      art.controls.show = true;
   };
 
   progress.addEventListener('mousedown', onMouseDown, true);
@@ -142,6 +174,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
   art.on('control', onControl);
 
   const cleanup = () => {
+    endGesturePreview();
     finish(false, false);
     progress.removeEventListener('mousedown', onMouseDown, true);
     progress.removeEventListener('touchstart', onTouchStart, true);
