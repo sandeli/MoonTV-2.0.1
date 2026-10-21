@@ -50,6 +50,9 @@ export interface PrefetchOptions {
   m3u8Url: string;
   /** 当前播放位置（秒） */
   currentTime: number;
+  /** 开启跳过时的片头、片尾时长（秒，均为非负数） */
+  skipIntroSeconds?: number;
+  skipOutroSeconds?: number;
   /** 当前影片名称，用于缓存面板展示 */
   title?: string;
   /** 影视源名称，用于缓存面板展示 */
@@ -99,7 +102,9 @@ const EVICT_INTERVAL_MS = 15_000;
  * 队列会一直铺到播放列表最后一个分片，之后播放推进只做增量续跑。
  */
 function horizonEndTime(currentTime: number, horizonSeconds: number): number {
-  return horizonSeconds > 0 ? currentTime + horizonSeconds : Number.POSITIVE_INFINITY;
+  return horizonSeconds > 0
+    ? currentTime + horizonSeconds
+    : Number.POSITIVE_INFINITY;
 }
 
 /** 供回归测试使用（纯函数，无副作用） */
@@ -153,6 +158,7 @@ export class VideoPrefetcher {
   private episodeKey: string | null = null;
   /** 本轮队列使用的码率档位（画面高度），null 表示"最高带宽" */
   private preferredHeight: number | null = null;
+  private skipWindowKey = '';
   /** 当前已排入队列的覆盖区间 [windowFrom, windowTo]（秒） */
   private windowFrom = 0;
   private windowTo = 0;
@@ -172,7 +178,11 @@ export class VideoPrefetcher {
 
     const settings = loadCacheSettings();
     if (!settings.enabled) {
-      this.emit(options, { state: 'disabled', message: '已关闭视频缓存' }, true);
+      this.emit(
+        options,
+        { state: 'disabled', message: '已关闭视频缓存' },
+        true
+      );
       return;
     }
     if (!shouldPrefetch()) {
@@ -189,6 +199,14 @@ export class VideoPrefetcher {
     // 旧队列缓存的分片与新请求对不上，继续跑只是白烧带宽。
     const preferredHeight = options.preferredHeight ?? null;
     const sameVariant = this.preferredHeight === preferredHeight;
+    const skipIntro = Math.max(0, options.skipIntroSeconds || 0);
+    const skipOutro = Math.max(0, options.skipOutroSeconds || 0);
+    options = {
+      ...options,
+      currentTime: Math.max(options.currentTime, skipIntro),
+    };
+    const skipWindowKey = `${skipIntro}:${skipOutro}`;
+    const sameSkipWindow = this.skipWindowKey === skipWindowKey;
 
     // 队列已经覆盖到播放列表末尾，且当前播放位置落在已覆盖区间内：
     // 再叫也不会多出可缓存的片段。
@@ -198,6 +216,7 @@ export class VideoPrefetcher {
     if (
       sameEpisode &&
       sameVariant &&
+      sameSkipWindow &&
       this.reachedEnd &&
       options.currentTime >= this.windowFrom - 60 &&
       options.currentTime <= this.windowTo
@@ -219,6 +238,7 @@ export class VideoPrefetcher {
     const windowStillUseful =
       sameEpisode &&
       sameVariant &&
+      sameSkipWindow &&
       this.controller !== null &&
       !this.controller.signal.aborted &&
       options.currentTime + 60 < this.windowTo &&
@@ -235,6 +255,7 @@ export class VideoPrefetcher {
     this.controller = controller;
     this.episodeKey = options.episodeKey;
     this.preferredHeight = preferredHeight;
+    this.skipWindowKey = skipWindowKey;
 
     // 先写入近似窗口边界，让窗口判断在 run() 完成解析前就生效。
     // 否则解析期间（await parseM3U8）连续的 ensure 调用会反复重启队列。
@@ -333,11 +354,7 @@ export class VideoPrefetcher {
     const unlimitedHorizon = !(horizonSeconds > 0);
     const horizonTime = horizonEndTime(options.currentTime, horizonSeconds);
 
-    this.emit(
-      options,
-      { state: 'parsing', message: undefined },
-      true
-    );
+    this.emit(options, { state: 'parsing', message: undefined }, true);
 
     let task: Awaited<ReturnType<typeof parseM3U8>>;
     try {
@@ -360,7 +377,8 @@ export class VideoPrefetcher {
     }
 
     const cumulative = toCumulative(task.segmentDurations);
-    const durationsUsable = task.durationSecond > 0 && cumulative[cumulative.length - 1] > 0;
+    const durationsUsable =
+      task.durationSecond > 0 && cumulative[cumulative.length - 1] > 0;
 
     let queue: number[];
 
@@ -401,9 +419,22 @@ export class VideoPrefetcher {
       this.reachedEnd = limit >= task.tsUrlList.length;
     }
 
-    if (queue.length === 0) {
-      this.emit(options, { state: 'done', message: '没有需要预取的片段' }, true);
-      return;
+    if (durationsUsable) {
+      const playableStart = Math.max(0, options.skipIntroSeconds || 0);
+      const playableEnd = Math.max(
+        0,
+        cumulative[cumulative.length - 1] -
+          Math.max(0, options.skipOutroSeconds || 0)
+      );
+      // 保留跨越边界的分片，以免正文开头/结尾缺少解码数据。
+      queue = queue.filter((index) => {
+        const start = index === 0 ? 0 : cumulative[index - 1];
+        return (
+          playableEnd > playableStart &&
+          cumulative[index] > playableStart &&
+          start < playableEnd
+        );
+      });
     }
 
     void ensurePersistentStorage();
@@ -415,7 +446,11 @@ export class VideoPrefetcher {
     let statsRefresh: Promise<void> | null = null;
     const refreshStats = async (force = false): Promise<void> => {
       if (statsRefresh) await statsRefresh;
-      if (signal.aborted || (!force && Date.now() - lastStatsAt < EMIT_INTERVAL_MS)) return;
+      if (
+        signal.aborted ||
+        (!force && Date.now() - lastStatsAt < EMIT_INTERVAL_MS)
+      )
+        return;
       lastStatsAt = Date.now();
       statsRefresh = (async () => {
         const records = await getCachedSegmentRecords();
@@ -439,14 +474,24 @@ export class VideoPrefetcher {
           // 用当前播放列表补齐旧缓存的时间信息，无需重新下载。
           const startTime = i === 0 ? 0 : cumulative[i - 1];
           const endTime = cumulative[i];
-          if (durationsUsable && (record.startTime !== startTime || record.endTime !== endTime)) {
+          if (
+            durationsUsable &&
+            (record.startTime !== startTime || record.endTime !== endTime)
+          ) {
             await metaStore.put({ ...record, startTime, endTime });
             if (signal.aborted) return;
           }
         }
-        this.emit(options, {
-          cached, bytes, coverTo, total: task.tsUrlList.length,
-        }, force);
+        this.emit(
+          options,
+          {
+            cached,
+            bytes,
+            coverTo,
+            total: task.tsUrlList.length,
+          },
+          force
+        );
       })();
       try {
         await statsRefresh;
@@ -475,8 +520,15 @@ export class VideoPrefetcher {
 
         const segmentIndex = queue[slot];
         const range = task.segmentByteRanges?.[segmentIndex];
-        const requestUrl = buildSegmentCacheKey(task.tsUrlList[segmentIndex], useProxy);
-        const cacheKey = buildSegmentCacheKey(task.tsUrlList[segmentIndex], useProxy, range);
+        const requestUrl = buildSegmentCacheKey(
+          task.tsUrlList[segmentIndex],
+          useProxy
+        );
+        const cacheKey = buildSegmentCacheKey(
+          task.tsUrlList[segmentIndex],
+          useProxy,
+          range
+        );
 
         try {
           const alreadyCached = await hasCachedSegment(cacheKey);
@@ -524,7 +576,11 @@ export class VideoPrefetcher {
             title: options.title || '未知影片',
             source: options.source || '未知来源',
             index: segmentIndex + 1,
-            startTime: durationsUsable ? (segmentIndex === 0 ? 0 : cumulative[segmentIndex - 1]) : undefined,
+            startTime: durationsUsable
+              ? segmentIndex === 0
+                ? 0
+                : cumulative[segmentIndex - 1]
+              : undefined,
             endTime: durationsUsable ? cumulative[segmentIndex] : undefined,
             bytes: buffer.byteLength,
             costMs,
@@ -561,12 +617,19 @@ export class VideoPrefetcher {
       // 否则用户只会看到计数器停在某一格，不知道是磁盘写不进去了。
       this.emit(
         options,
-        { state: 'error', message: `存储空间已满，缓存 ${this.stats.cached} 个片段后停止` },
+        {
+          state: 'error',
+          message: `存储空间已满，缓存 ${this.stats.cached} 个片段后停止`,
+        },
         true
       );
       return;
     }
-    this.emit(options, { state: 'done', message: `已缓存 ${this.stats.cached} 个片段` }, true);
+    this.emit(
+      options,
+      { state: 'done', message: `已缓存 ${this.stats.cached} 个片段` },
+      true
+    );
   }
 }
 

@@ -58,7 +58,11 @@ function normalizeSourceName(source?: string): string {
   return value;
 }
 
-function formatEpisodeCacheLabel(ep: { title?: string; source?: string; episodeKey: string }): string {
+function formatEpisodeCacheLabel(ep: {
+  title?: string;
+  source?: string;
+  episodeKey: string;
+}): string {
   const title = ep.title?.trim() || '未知影片';
   const source = normalizeSourceName(ep.source);
   const episodeParts = ep.episodeKey.split(':').filter(Boolean);
@@ -178,7 +182,9 @@ export default function CacheManager({ isOpen, onClose }: CacheManagerProps) {
         {/* 列表 */}
         <div className='flex-1 overflow-y-auto px-5 py-4'>
           {loading ? (
-            <div className='py-10 text-center text-sm text-gray-400'>加载中...</div>
+            <div className='py-10 text-center text-sm text-gray-400'>
+              加载中...
+            </div>
           ) : episodes.length === 0 ? (
             <div className='py-10 text-center text-sm text-gray-400'>
               暂无缓存内容
@@ -191,66 +197,80 @@ export default function CacheManager({ isOpen, onClose }: CacheManagerProps) {
                 );
                 const ranges = mergeCachedTimeRanges(episodeRecords);
                 const coveredSeconds = ranges.reduce(
-                  (sum, range) => sum + range.endTime - range.startTime, 0
+                  (sum, range) => sum + range.endTime - range.startTime,
+                  0
                 );
                 const unknownCount = episodeRecords.filter(
-                  (record) => record.startTime === undefined || record.endTime === undefined
+                  (record) =>
+                    record.startTime === undefined ||
+                    record.endTime === undefined
                 ).length;
                 return (
-                <li
-                  key={ep.episodeKey}
-                  className='rounded-lg bg-gray-50 dark:bg-gray-700/40 px-3 py-2'
-                >
-                  <div className='flex items-center justify-between'>
-                  <div className='min-w-0'>
-                    <div className='truncate text-sm text-gray-800 dark:text-gray-200'>
-                      {formatEpisodeCacheLabel(ep)}
-                    </div>
-                    <div className='text-xs text-gray-500 dark:text-gray-400 mt-0.5'>
-                      {ep.segments} 片段 · {formatBytes(ep.bytes)}
-                      {coveredSeconds > 0 && ` · 已覆盖 ${formatCacheTime(coveredSeconds)}`}
-                    </div>
-                    <button
-                      type='button'
-                      aria-expanded={expandedEpisode === ep.episodeKey}
-                      onClick={() => setExpandedEpisode(
-                        expandedEpisode === ep.episodeKey ? null : ep.episodeKey
-                      )}
-                      className='mt-1 text-xs text-green-600 hover:text-green-700 dark:text-green-400'
-                    >
-                      {expandedEpisode === ep.episodeKey ? '收起详情' : '缓存详情'}
-                    </button>
-                  </div>
-                  <button
-                    onClick={() => handleDeleteEpisode(ep.episodeKey)}
-                    className='ml-3 shrink-0 rounded-full p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/30'
-                    aria-label='删除该剧集缓存'
-                    title='删除该剧集缓存'
+                  <li
+                    key={ep.episodeKey}
+                    className='rounded-lg bg-gray-50 dark:bg-gray-700/40 px-3 py-2'
                   >
-                    <Trash2 className='h-4 w-4' />
-                  </button>
-                  </div>
-                  {expandedEpisode === ep.episodeKey && (
-                    <div className='mt-3 space-y-2 border-t border-gray-200/60 pt-2 text-xs dark:border-gray-600'>
-                      {ranges.map((range) => (
-                        <div
-                          key={`${range.startTime}-${range.endTime}`}
-                          className='flex flex-wrap justify-between gap-1 text-gray-600 dark:text-gray-300'
-                        >
-                          <span>片段 {range.firstIndex} - {range.lastIndex}</span>
-                          <span className='font-mono tabular-nums'>
-                            {formatCacheTime(range.startTime)} - {formatCacheTime(range.endTime)}
-                          </span>
+                    <div className='flex items-center justify-between'>
+                      <div className='min-w-0'>
+                        <div className='truncate text-sm text-gray-800 dark:text-gray-200'>
+                          {formatEpisodeCacheLabel(ep)}
                         </div>
-                      ))}
-                      {unknownCount > 0 && (
-                        <p className='text-gray-400'>
-                          {unknownCount} 个旧片段暂无时间信息，播放该集后自动补齐
-                        </p>
-                      )}
+                        <div className='text-xs text-gray-500 dark:text-gray-400 mt-0.5'>
+                          {ep.segments} 片段 · {formatBytes(ep.bytes)}
+                          {coveredSeconds > 0 &&
+                            ` · 已覆盖 ${formatCacheTime(coveredSeconds)}`}
+                        </div>
+                        <button
+                          type='button'
+                          aria-expanded={expandedEpisode === ep.episodeKey}
+                          onClick={() =>
+                            setExpandedEpisode(
+                              expandedEpisode === ep.episodeKey
+                                ? null
+                                : ep.episodeKey
+                            )
+                          }
+                          className='mt-1 text-xs text-green-600 hover:text-green-700 dark:text-green-400'
+                        >
+                          {expandedEpisode === ep.episodeKey
+                            ? '收起详情'
+                            : '缓存详情'}
+                        </button>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteEpisode(ep.episodeKey)}
+                        className='ml-3 shrink-0 rounded-full p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/30'
+                        aria-label='删除该剧集缓存'
+                        title='删除该剧集缓存'
+                      >
+                        <Trash2 className='h-4 w-4' />
+                      </button>
                     </div>
-                  )}
-                </li>
+                    {expandedEpisode === ep.episodeKey && (
+                      <div className='mt-3 space-y-2 border-t border-gray-200/60 pt-2 text-xs dark:border-gray-600'>
+                        {ranges.map((range) => (
+                          <div
+                            key={`${range.startTime}-${range.endTime}`}
+                            className='flex flex-wrap justify-between gap-1 text-gray-600 dark:text-gray-300'
+                          >
+                            <span>
+                              片段 {range.firstIndex} - {range.lastIndex}
+                            </span>
+                            <span className='font-mono tabular-nums'>
+                              {formatCacheTime(range.startTime)} -{' '}
+                              {formatCacheTime(range.endTime)}
+                            </span>
+                          </div>
+                        ))}
+                        {unknownCount > 0 && (
+                          <p className='text-gray-400'>
+                            {unknownCount}{' '}
+                            个旧片段暂无时间信息，播放该集后自动补齐
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </li>
                 );
               })}
             </ul>
