@@ -11,6 +11,7 @@ export interface ProgressPreviewMove {
 /** Keep playback running while scrubbing; commit the selected time on release. */
 export function bindDeferredProgressSeek(art: Artplayer): () => void {
   const progress = art.template.$progress;
+  const player = art.template.$player;
   const doc = progress.ownerDocument;
   const win = doc.defaultView;
   let drag: 'mouse' | 'touch' | null = null;
@@ -18,6 +19,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
   let ratio = 0;
   let restoringBar = false;
   let gesturePreview = false;
+  let systemGesture = false;
 
   const endGesturePreview = () => {
     if (!gesturePreview) return;
@@ -76,6 +78,26 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     updatePosition(event.clientX, event.clientY, event);
     finish(true);
   };
+  const onPlayerTouchStart = (event: TouchEvent) => {
+    if (!art.fullscreen && !art.fullscreenWeb && !art.isRotate) return;
+    const viewportTop = win?.visualViewport?.offsetTop || 0;
+    // Use screen coordinates, not the rotated player's progress axis.
+    if (
+      !systemGesture &&
+      !Array.from(event.touches).some(
+        (touch) => touch.clientY <= viewportTop + 40
+      )
+    ) {
+      return;
+    }
+    systemGesture = true;
+    endGesturePreview();
+    finish(false);
+    // Clear Artplayer's previous gesture, including interrupted touch sequences.
+    art.emit('document:touchend', event);
+    // Do not preventDefault: the OS must still receive notification gestures.
+    event.stopImmediatePropagation();
+  };
   const onTouchStart = (event: TouchEvent) => {
     if (event.touches.length !== 1 || art.isLock || drag) return;
     event.stopImmediatePropagation();
@@ -87,6 +109,10 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     updatePosition(touch.clientX, touch.clientY, event);
   };
   const onTouchMove = (event: TouchEvent) => {
+    if (systemGesture) {
+      event.stopImmediatePropagation();
+      return;
+    }
     if (drag !== 'touch') return;
     event.stopImmediatePropagation();
     event.preventDefault();
@@ -100,6 +126,10 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     if (touch) updatePosition(touch.clientX, touch.clientY, event);
   };
   const onTouchEnd = (event: TouchEvent) => {
+    if (systemGesture) {
+      if (event.touches.length === 0) systemGesture = false;
+      return;
+    }
     if (event.touches.length === 0) endGesturePreview();
     if (drag !== 'touch') return;
     const touch = Array.from(event.changedTouches).find(
@@ -110,9 +140,14 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     updatePosition(touch.clientX, touch.clientY, event);
     finish(true);
   };
-  const onCancel = () => {
+  const onCancel = (event?: Event) => {
+    systemGesture = false;
     endGesturePreview();
     finish(false);
+    art.emit('document:touchend', event || new Event('touchcancel'));
+  };
+  const onVisibilityChange = () => {
+    if (doc.hidden) onCancel();
   };
   const onClick = (event: MouseEvent) => {
     // A release already committed the seek; do not seek again on its click.
@@ -128,6 +163,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
       // Artplayer emits this only for progress-changing video gestures.
       if (
         !art.isLock &&
+        !systemGesture &&
         event?.type === 'touchmove' &&
         Number.isFinite(percentage)
       ) {
@@ -155,6 +191,10 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
       art.controls.show = true;
   };
 
+  player.addEventListener('touchstart', onPlayerTouchStart, {
+    capture: true,
+    passive: true,
+  });
   progress.addEventListener('mousedown', onMouseDown, true);
   progress.addEventListener('touchstart', onTouchStart, {
     capture: true,
@@ -169,6 +209,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
   });
   doc.addEventListener('touchend', onTouchEnd, true);
   doc.addEventListener('touchcancel', onCancel, true);
+  doc.addEventListener('visibilitychange', onVisibilityChange);
   win?.addEventListener('blur', onCancel);
   art.on('setBar', onSetBar);
   art.on('control', onControl);
@@ -176,6 +217,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
   const cleanup = () => {
     endGesturePreview();
     finish(false, false);
+    player.removeEventListener('touchstart', onPlayerTouchStart, true);
     progress.removeEventListener('mousedown', onMouseDown, true);
     progress.removeEventListener('touchstart', onTouchStart, true);
     progress.removeEventListener('click', onClick, true);
@@ -184,6 +226,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     doc.removeEventListener('touchmove', onTouchMove, true);
     doc.removeEventListener('touchend', onTouchEnd, true);
     doc.removeEventListener('touchcancel', onCancel, true);
+    doc.removeEventListener('visibilitychange', onVisibilityChange);
     win?.removeEventListener('blur', onCancel);
     art.off('setBar', onSetBar);
     art.off('control', onControl);
