@@ -3,7 +3,7 @@
 import { ExternalLink, Heart, Link, PlayCircleIcon, Trash2 } from 'lucide-react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   deleteFavorite,
@@ -75,7 +75,18 @@ export default function VideoCard({
   const [favoriteChecked, setFavoriteChecked] = useState(false); // 是否已经检查过收藏状态
   const [followingChecked, setFollowingChecked] = useState(false); // 是否已经检查过追更状态
   const [isActionOpen, setIsActionOpen] = useState(false);
-  const [longPressTimer, setLongPressTimer] = useState<number | null>(null);
+  const longPressTimer = useRef<number | null>(null);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const suppressContextMenuUntil = useRef(0);
+
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimer.current !== null) {
+      window.clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }, []);
+
+  useEffect(() => cancelLongPress, [cancelLongPress]);
 
   const isAggregate = from === 'search' && !!items?.length;
 
@@ -363,29 +374,48 @@ export default function VideoCard({
       onContextMenu={(e) => {
         e.preventDefault();
         e.stopPropagation();
+        // Touch menus are handled by the stationary long-press timer only.
+        if (Date.now() < suppressContextMenuUntil.current) return;
+        cancelLongPress();
         setIsActionOpen(true);
+      }}
+      onMouseDown={() => {
+        suppressContextMenuUntil.current = 0;
       }}
       onTouchStart={(e) => {
         e.stopPropagation();
-        if (longPressTimer) {
-          window.clearTimeout(longPressTimer);
-        }
-        const timerId = window.setTimeout(() => {
+        cancelLongPress();
+        touchStart.current = null;
+        suppressContextMenuUntil.current = Infinity;
+        if (e.touches.length !== 1) return;
+        const touch = e.touches[0];
+        touchStart.current = { x: touch.clientX, y: touch.clientY };
+        longPressTimer.current = window.setTimeout(() => {
+          longPressTimer.current = null;
           setIsActionOpen(true);
         }, 500);
-        setLongPressTimer(timerId);
+      }}
+      onTouchMove={(e) => {
+        const start = touchStart.current;
+        if (!start) return;
+        const touch = e.touches[0];
+        if (
+          e.touches.length !== 1 ||
+          Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > 8
+        ) {
+          cancelLongPress();
+          touchStart.current = null;
+        }
       }}
       onTouchEnd={() => {
-        if (longPressTimer) {
-          window.clearTimeout(longPressTimer);
-          setLongPressTimer(null);
-        }
+        cancelLongPress();
+        touchStart.current = null;
+        suppressContextMenuUntil.current = Date.now() + 800;
       }}
       onTouchCancel={() => {
-        if (longPressTimer) {
-          window.clearTimeout(longPressTimer);
-          setLongPressTimer(null);
-        }
+        cancelLongPress();
+        touchStart.current = null;
+        suppressContextMenuUntil.current = Date.now() + 800;
       }}
       onMouseEnter={() => {
           // 收藏夹里的卡片在该分支下默认已收藏，但仍需保持与首页/历史一致的追更状态检查

@@ -11,16 +11,18 @@
  */
 
 import { parseM3U8 } from './m3u8-downloader';
+import { byteRangeHeader, readByteRangeResponse } from './video-byte-range';
 import {
   type CacheSettings,
   buildSegmentCacheKey,
   enforceQuota,
   ensurePersistentStorage,
+  getCachedSegmentRecords,
+  getCacheKeyVariants,
   hasCachedSegment,
   loadCacheSettings,
   metaStore,
   putCachedSegmentResilient,
-  touchMeta,
 } from './video-cache';
 
 export type PrefetchState =
@@ -35,11 +37,11 @@ export interface PrefetchStats {
   state: PrefetchState;
   /** 已就绪的片段数 */
   cached: number;
-  /** 本轮计划片段数 */
+  /** 完整播放列表的片段总数，不随跳转改变 */
   total: number;
-  /** 本轮写入字节数 */
+  /** 当前播放列表实际缓存字节数 */
   bytes: number;
-  /** 缓存已覆盖到的播放时间（秒），可直接 formatTime 展示 */
+  /** 实际已缓存片段的总时长（秒），不包含缓存间隙 */
   coverTo: number;
   message?: string;
 }
@@ -48,6 +50,9 @@ export interface PrefetchOptions {
   m3u8Url: string;
   /** 当前播放位置（秒） */
   currentTime: number;
+  /** 开启跳过时的片头、片尾时长（秒，均为非负数） */
+  skipIntroSeconds?: number;
+  skipOutroSeconds?: number;
   /** 当前影片名称，用于缓存面板展示 */
   title?: string;
   /** 影视源名称，用于缓存面板展示 */
@@ -58,9 +63,9 @@ export interface PrefetchOptions {
   horizonSeconds?: number;
   /** 回看保护时长（秒），默认 30 */
   lookBehindSeconds?: number;
-  /** 并发数，默认 3（上限 4）：并发太高会抢播放的带宽 */
+  /** 覆盖缓存模式的并发数（上限 32）：并发太高会抢播放的带宽 */
   concurrency?: number;
-  /** 覆盖 settings.useProxy */
+  /** 覆盖 settings.useProxy：直连失败时是否允许代理兜底 */
   useProxy?: boolean;
   /**
    * 期望缓存的画面高度（如 1080）。
@@ -86,6 +91,7 @@ const FALLBACK_MAX_SEGMENTS = 200;
 
 /** 进度回调最小间隔，避免高频写 React state */
 const EMIT_INTERVAL_MS = 250;
+const STATS_REFRESH_INTERVAL_MS = 2_000;
 
 /** 淘汰检查间隔 */
 const EVICT_INTERVAL_MS = 15_000;
@@ -97,7 +103,9 @@ const EVICT_INTERVAL_MS = 15_000;
  * 队列会一直铺到播放列表最后一个分片，之后播放推进只做增量续跑。
  */
 function horizonEndTime(currentTime: number, horizonSeconds: number): number {
-  return horizonSeconds > 0 ? currentTime + horizonSeconds : Number.POSITIVE_INFINITY;
+  return horizonSeconds > 0
+    ? currentTime + horizonSeconds
+    : Number.POSITIVE_INFINITY;
 }
 
 /** 供回归测试使用（纯函数，无副作用） */
@@ -147,14 +155,18 @@ function indexAtTime(cumulative: number[], time: number): number {
 
 export class VideoPrefetcher {
   private controller: AbortController | null = null;
+  private pendingRuns = new Set<Promise<void>>();
   private episodeKey: string | null = null;
   /** 本轮队列使用的码率档位（画面高度），null 表示"最高带宽" */
   private preferredHeight: number | null = null;
+  private skipWindowKey = '';
+  private sourceKey = '';
   /** 当前已排入队列的覆盖区间 [windowFrom, windowTo]（秒） */
   private windowFrom = 0;
   private windowTo = 0;
   /** 队列已覆盖到播放列表末尾：此时无论请求多大视野都无事可做 */
   private reachedEnd = false;
+  private accessDenied = false;
   private throttled = false;
   private resumeWaiters: Array<() => void> = [];
   private stats: PrefetchStats = { ...IDLE_STATS };
@@ -169,10 +181,16 @@ export class VideoPrefetcher {
 
     const settings = loadCacheSettings();
     if (!settings.enabled) {
-      this.emit(options, { state: 'disabled', message: '已关闭视频缓存' }, true);
+      this.stop();
+      this.emit(
+        options,
+        { state: 'disabled', message: '已关闭视频缓存' },
+        true
+      );
       return;
     }
     if (!shouldPrefetch()) {
+      this.stop();
       this.emit(
         options,
         { state: 'disabled', message: '当前网络环境已跳过缓存' },
@@ -181,11 +199,28 @@ export class VideoPrefetcher {
       return;
     }
 
-    const sameEpisode = this.episodeKey === options.episodeKey;
+    const sourceKey = `${options.m3u8Url}|${
+      options.useProxy ?? settings.useProxy
+    }`;
+    const sameEpisode =
+      this.episodeKey === options.episodeKey && this.sourceKey === sourceKey;
     // 档位变了（用户手动切画质）就必须重建队列：不同档位的分片 URL 不同，
     // 旧队列缓存的分片与新请求对不上，继续跑只是白烧带宽。
     const preferredHeight = options.preferredHeight ?? null;
     const sameVariant = this.preferredHeight === preferredHeight;
+    const skipIntro = Math.max(0, options.skipIntroSeconds || 0);
+    const skipOutro = Math.max(0, options.skipOutroSeconds || 0);
+    options = {
+      ...options,
+      currentTime: Math.max(options.currentTime, skipIntro),
+    };
+    const skipWindowKey = `${skipIntro}:${skipOutro}`;
+    const sameSkipWindow = this.skipWindowKey === skipWindowKey;
+
+    if (sameEpisode && sameVariant && sameSkipWindow && this.accessDenied) {
+      this.emit(options, this.stats);
+      return;
+    }
 
     // 队列已经覆盖到播放列表末尾，且当前播放位置落在已覆盖区间内：
     // 再叫也不会多出可缓存的片段。
@@ -195,6 +230,7 @@ export class VideoPrefetcher {
     if (
       sameEpisode &&
       sameVariant &&
+      sameSkipWindow &&
       this.reachedEnd &&
       options.currentTime >= this.windowFrom - 60 &&
       options.currentTime <= this.windowTo
@@ -203,9 +239,10 @@ export class VideoPrefetcher {
       return;
     }
 
-    const requestedTo =
-      options.currentTime +
-      (options.horizonSeconds ?? settings.horizonSeconds);
+    const requestedTo = horizonEndTime(
+      options.currentTime,
+      options.horizonSeconds ?? settings.horizonSeconds
+    );
 
     // 窗口仍然够用的条件：
     // 1) 前向还有 60s 以上余量（避免刚排完就重启）
@@ -215,6 +252,7 @@ export class VideoPrefetcher {
     const windowStillUseful =
       sameEpisode &&
       sameVariant &&
+      sameSkipWindow &&
       this.controller !== null &&
       !this.controller.signal.aborted &&
       options.currentTime + 60 < this.windowTo &&
@@ -226,11 +264,13 @@ export class VideoPrefetcher {
       return;
     }
 
-    this.stop();
+    this.stop(sameEpisode && sameVariant);
     const controller = new AbortController();
     this.controller = controller;
     this.episodeKey = options.episodeKey;
+    this.sourceKey = sourceKey;
     this.preferredHeight = preferredHeight;
+    this.skipWindowKey = skipWindowKey;
 
     // 先写入近似窗口边界，让窗口判断在 run() 完成解析前就生效。
     // 否则解析期间（await parseM3U8）连续的 ensure 调用会反复重启队列。
@@ -241,24 +281,37 @@ export class VideoPrefetcher {
     );
     this.windowTo = requestedTo;
 
-    void this.run(options, settings, controller.signal);
+    const run = this.run(options, settings, controller.signal).catch(() => {
+      if (controller.signal.aborted) return;
+      this.controller = null;
+      this.emit(options, { state: 'error', message: '缓存存储读取失败' }, true);
+    });
+    this.pendingRuns.add(run);
+    void run.finally(() => this.pendingRuns.delete(run));
+  }
+
+  /** 中止并等待在途写入完成，避免清空后旧任务重新写回缓存。 */
+  async stopAndWait(): Promise<void> {
+    this.stop();
+    await Promise.allSettled(Array.from(this.pendingRuns));
   }
 
   /** 完整停止并重置（切集、换源、卸载时调用） */
-  stop(): void {
+  stop(preserveStats = false): void {
     this.controller?.abort();
     this.controller = null;
-    this.episodeKey = null;
+    if (!preserveStats) this.episodeKey = null;
     this.windowFrom = 0;
     this.windowTo = 0;
     this.reachedEnd = false;
+    this.accessDenied = false;
     this.throttled = false;
 
     const waiters = this.resumeWaiters;
     this.resumeWaiters = [];
     waiters.forEach((resolve) => resolve());
 
-    this.stats = { ...IDLE_STATS };
+    if (!preserveStats) this.stats = { ...IDLE_STATS };
   }
 
   /**
@@ -302,8 +355,14 @@ export class VideoPrefetcher {
     settings: CacheSettings,
     signal: AbortSignal
   ): Promise<void> {
+    // 等待已中止队列的在途写入，避免旧任务与新队列交叉更新统计。
+    await Promise.allSettled(Array.from(this.pendingRuns));
+    if (signal.aborted) return;
     const useProxy = options.useProxy ?? settings.useProxy;
-    const concurrency = Math.max(1, Math.min(4, options.concurrency ?? 3));
+    const concurrency = Math.max(
+      1,
+      Math.min(32, Math.round(options.concurrency ?? settings.concurrency))
+    );
     const lookBehind = Math.max(0, options.lookBehindSeconds ?? 30);
 
     const horizonSeconds = options.horizonSeconds ?? settings.horizonSeconds;
@@ -311,19 +370,17 @@ export class VideoPrefetcher {
     const unlimitedHorizon = !(horizonSeconds > 0);
     const horizonTime = horizonEndTime(options.currentTime, horizonSeconds);
 
-    this.emit(
-      options,
-      { state: 'parsing', cached: 0, total: 0, bytes: 0, coverTo: 0 },
-      true
-    );
+    this.emit(options, { state: 'parsing', message: undefined }, true);
 
     let task: Awaited<ReturnType<typeof parseM3U8>>;
     try {
       // 档位透传给解析器：主播放列表有多个码率时只取与当前播放一致的那一档
       task = await parseM3U8(options.m3u8Url, 0, {
         height: options.preferredHeight ?? null,
+        signal,
       });
     } catch {
+      if (signal.aborted) return;
       this.controller = null; // 置空后下一次 ensure() 会重建队列重试
       this.emit(options, { state: 'error', message: '播放列表解析失败' }, true);
       return;
@@ -336,20 +393,9 @@ export class VideoPrefetcher {
       return;
     }
 
-    // EXT-X-BYTERANGE 场景下多个片段共用同一 URL，URL 不能作为缓存键。
-    // 支持它需要把 (url, rangeStart, rangeEnd) 一起编码进 key，此处直接降级。
-    if (new Set(task.tsUrlList).size !== task.tsUrlList.length) {
-      this.controller = null;
-      this.emit(
-        options,
-        { state: 'error', message: '该播放列表使用字节范围分片，暂不支持预缓存' },
-        true
-      );
-      return;
-    }
-
     const cumulative = toCumulative(task.segmentDurations);
-    const durationsUsable = task.durationSecond > 0 && cumulative[cumulative.length - 1] > 0;
+    const durationsUsable =
+      task.durationSecond > 0 && cumulative[cumulative.length - 1] > 0;
 
     let queue: number[];
 
@@ -390,80 +436,208 @@ export class VideoPrefetcher {
       this.reachedEnd = limit >= task.tsUrlList.length;
     }
 
-    if (queue.length === 0) {
-      this.emit(options, { state: 'done', message: '没有需要预取的片段' }, true);
-      return;
+    if (durationsUsable) {
+      const playableStart = Math.max(0, options.skipIntroSeconds || 0);
+      const playableEnd = Math.max(
+        0,
+        cumulative[cumulative.length - 1] -
+          Math.max(0, options.skipOutroSeconds || 0)
+      );
+      // 保留跨越边界的分片，以免正文开头/结尾缺少解码数据。
+      queue = queue.filter((index) => {
+        const start = index === 0 ? 0 : cumulative[index - 1];
+        return (
+          playableEnd > playableStart &&
+          cumulative[index] > playableStart &&
+          start < playableEnd
+        );
+      });
     }
 
     void ensurePersistentStorage();
 
-    this.emit(
-      options,
-      {
-        state: 'running',
-        total: queue.length,
-        cached: 0,
-        bytes: 0,
-        coverTo: 0,
-        message: undefined,
-      },
-      true
+    const segmentKeys = task.tsUrlList.map((url, index) =>
+      buildSegmentCacheKey(url, useProxy, task.segmentByteRanges?.[index])
     );
+    let lastStatsAt = 0;
+    let statsRefresh: Promise<void> | null = null;
+    const refreshStats = async (force = false): Promise<void> => {
+      if (statsRefresh) {
+        await statsRefresh;
+        if (!force) return;
+      }
+      if (
+        signal.aborted ||
+        (!force && Date.now() - lastStatsAt < STATS_REFRESH_INTERVAL_MS)
+      )
+        return;
+      lastStatsAt = Date.now();
+      statsRefresh = (async () => {
+        const records = await getCachedSegmentRecords();
+        if (signal.aborted) return;
+        const byKey = new Map(
+          records.flatMap((record) =>
+            getCacheKeyVariants(record.key).map((key) => [key, record] as const)
+          )
+        );
+        let cached = 0;
+        let bytes = 0;
+        let coverTo = 0;
+        for (let i = 0; i < segmentKeys.length; i += 1) {
+          const record = getCacheKeyVariants(segmentKeys[i])
+            .map((key) => byKey.get(key))
+            .find(Boolean);
+          if (!record) continue;
+          cached += 1;
+          bytes += record.bytes;
+          coverTo += task.segmentDurations[i] || 0;
+          // 用当前播放列表补齐旧缓存的时间信息，无需重新下载。
+          const startTime = i === 0 ? 0 : cumulative[i - 1];
+          const endTime = cumulative[i];
+          if (
+            durationsUsable &&
+            (record.startTime !== startTime || record.endTime !== endTime)
+          ) {
+            await metaStore.put({ ...record, startTime, endTime });
+            if (signal.aborted) return;
+          }
+        }
+        this.emit(
+          options,
+          {
+            cached,
+            bytes,
+            coverTo,
+            total: task.tsUrlList.length,
+          },
+          force
+        );
+      })();
+      try {
+        await statsRefresh;
+      } finally {
+        statsRefresh = null;
+      }
+    };
+
+    await refreshStats(true);
+    if (signal.aborted) return;
+    this.emit(options, { state: 'running', message: undefined }, true);
 
     let cursor = 0;
-    let cached = 0;
-    let bytes = 0;
-    let maxCachedIndex = -1;
     let lastEvictAt = Date.now();
     /** 存储配额耗尽：淘汰也腾不出空间，继续拉分片只会白烧流量 */
     let storageFull = false;
+    let accessError: string | undefined;
+    const proxyOrigins = new Set<string>();
+    const requests = new AbortController();
+    const cancelRequests = () => requests.abort();
+    signal.addEventListener('abort', cancelRequests, { once: true });
+    if (signal.aborted) requests.abort();
+    const denyAccess = (message: string) => {
+      if (accessError || signal.aborted) return;
+      accessError = message;
+      this.accessDenied = true;
+      requests.abort();
+      this.setThrottled(false);
+    };
 
     const worker = async (): Promise<void> => {
-      while (!signal.aborted && !storageFull) {
+      while (!signal.aborted && !storageFull && !accessError) {
         await this.waitWhileThrottled(signal);
-        if (signal.aborted) return;
+        if (signal.aborted || accessError) return;
 
         const slot = cursor;
         cursor += 1;
         if (slot >= queue.length) return;
 
         const segmentIndex = queue[slot];
-        const cacheKey = buildSegmentCacheKey(task.tsUrlList[segmentIndex], useProxy);
+        const range = task.segmentByteRanges?.[segmentIndex];
+        const directUrl = buildSegmentCacheKey(
+          task.tsUrlList[segmentIndex],
+          false
+        );
+        const origin = new URL(directUrl).origin;
+        const cacheKey = buildSegmentCacheKey(
+          task.tsUrlList[segmentIndex],
+          useProxy,
+          range
+        );
 
         try {
-          if (await hasCachedSegment(cacheKey)) {
-            cached += 1;
-            if (segmentIndex > maxCachedIndex) maxCachedIndex = segmentIndex;
-            void touchMeta(cacheKey);
-            this.emit(options, {
-              cached,
-              coverTo: durationsUsable ? cumulative[maxCachedIndex] ?? 0 : 0,
-            });
+          const alreadyCached = await hasCachedSegment(cacheKey);
+          if (signal.aborted || accessError) return;
+          if (alreadyCached) {
+            await refreshStats();
             continue;
           }
 
           const startedAt = Date.now();
-          const response = await fetch(cacheKey, {
-            signal,
+          const requestOptions: RequestInit = {
+            signal: requests.signal,
             credentials: 'omit',
             cache: 'no-store',
-          });
-          if (!response.ok) {
-            this.emit(options, {
-              message: `片段 ${segmentIndex + 1} 预取失败 ${response.status}`,
-            });
-            continue;
+            headers: range ? { Range: byteRangeHeader(range) } : undefined,
+          };
+          const loadSegment = async (url: string) => {
+            const response = await fetch(url, requestOptions);
+            if (!response.ok) {
+              await response.body?.cancel();
+              throw new Error(`HTTP ${response.status}`);
+            }
+            const buffer = await readByteRangeResponse(response, range);
+            return { response, buffer };
+          };
+          const proxyUrl = buildSegmentCacheKey(
+            task.tsUrlList[segmentIndex],
+            true
+          );
+          const proxyPreferred = useProxy && proxyOrigins.has(origin);
+          let segment: Awaited<ReturnType<typeof loadSegment>>;
+          try {
+            segment = await loadSegment(proxyPreferred ? proxyUrl : directUrl);
+          } catch (error) {
+            if (requests.signal.aborted) return;
+            const reason =
+              error instanceof Error ? error.message : '网络请求失败';
+            if (proxyPreferred || !useProxy) {
+              denyAccess(
+                `${
+                  proxyPreferred ? '代理' : '直连'
+                }缓存下载失败（${reason}），请更换播放源`
+              );
+              return;
+            }
+            // Prefer the browser's network; remember a successful proxy fallback
+            // for this origin, without changing cache keys or byte-range headers.
+            try {
+              segment = await loadSegment(proxyUrl);
+              proxyOrigins.add(origin);
+            } catch (proxyError) {
+              if (requests.signal.aborted) return;
+              const proxyReason =
+                proxyError instanceof Error
+                  ? proxyError.message
+                  : '网络请求失败';
+              denyAccess(
+                `直连失败（${reason}），代理也失败（${proxyReason}），请更换播放源`
+              );
+              return;
+            }
           }
 
-          const buffer = await response.arrayBuffer();
+          const { response, buffer } = segment;
           const costMs = Math.max(1, Date.now() - startedAt);
 
+          if (signal.aborted || accessError) return;
           const putResult = await putCachedSegmentResilient(
             cacheKey,
             buffer,
             response.headers.get('Content-Type'),
             settings
           );
+          // 已经落盘的片段仍需登记元数据；新队列会等待本轮写入结束。
+          if (signal.aborted && putResult !== 'ok') return;
           if (putResult === 'quota') {
             storageFull = true;
             return;
@@ -476,49 +650,68 @@ export class VideoPrefetcher {
             title: options.title || '未知影片',
             source: options.source || '未知来源',
             index: segmentIndex + 1,
+            startTime: durationsUsable
+              ? segmentIndex === 0
+                ? 0
+                : cumulative[segmentIndex - 1]
+              : undefined,
+            endTime: durationsUsable ? cumulative[segmentIndex] : undefined,
             bytes: buffer.byteLength,
             costMs,
             lastAccess: Date.now(),
           });
 
-          cached += 1;
-          bytes += buffer.byteLength;
-          if (segmentIndex > maxCachedIndex) maxCachedIndex = segmentIndex;
-
-          this.emit(options, {
-            cached,
-            bytes,
-            coverTo: durationsUsable ? cumulative[maxCachedIndex] ?? 0 : 0,
-          });
+          if (signal.aborted || accessError) return;
+          await refreshStats();
         } catch {
           // 单个片段失败（含 abort）不影响整轮，继续下一个
-          if (signal.aborted) return;
+          if (signal.aborted || accessError) return;
         }
 
         if (Date.now() - lastEvictAt > EVICT_INTERVAL_MS) {
           lastEvictAt = Date.now();
-          void enforceQuota(settings);
+          await enforceQuota(settings);
+          if (signal.aborted) return;
+          await refreshStats(true);
         }
       }
     };
 
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, queue.length) }, worker)
-    );
+    try {
+      await Promise.all(
+        Array.from({ length: Math.min(concurrency, queue.length) }, worker)
+      );
+    } finally {
+      signal.removeEventListener('abort', cancelRequests);
+    }
     if (signal.aborted) return;
 
-    void enforceQuota(settings);
+    await enforceQuota(settings);
+    if (signal.aborted) return;
+    await refreshStats(true);
+    if (signal.aborted) return;
+    if (accessError) {
+      this.emit(options, { state: 'error', message: accessError }, true);
+      return;
+    }
     if (storageFull) {
       // 用 `error` 而不是 `done`：得让 tooltip 原样显示这条 message，
       // 否则用户只会看到计数器停在某一格，不知道是磁盘写不进去了。
       this.emit(
         options,
-        { state: 'error', message: `存储空间已满，缓存 ${cached} 个片段后停止` },
+        {
+          state: 'error',
+          message: `存储空间已满，缓存 ${this.stats.cached} 个片段后停止`,
+        },
         true
       );
       return;
     }
-    this.emit(options, { state: 'done', message: `已缓存 ${cached} 个片段` }, true);
+    this.emit(
+      options,
+      { state: 'done', message: `已缓存 ${this.stats.cached} 个片段` },
+      true
+    );
   }
 }
 

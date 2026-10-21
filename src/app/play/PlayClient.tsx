@@ -16,6 +16,7 @@ import PageLayout from '@/components/PageLayout';
 import { PlayerOverlayHeader } from './components/PlayerOverlayHeader';
 import { ErrorView, LoadingView, VideoLoadingMask } from './components/PlayStatusView';
 import { VideoDetailPanel } from './components/VideoDetailPanel';
+import { formatTime } from './play-utils';
 import { usePlayEngine } from './usePlayEngine';
 
 /** 避免点到浮层时把点击传到 ArtPlayer（会误触发播放/暂停） */
@@ -54,6 +55,7 @@ export default function PlayClient() {
     // 播放器
     artRef,
     playerHost,
+    preview,
     isVideoLoading,
     videoLoadingStage,
     setLoading,
@@ -116,10 +118,10 @@ export default function PlayClient() {
 
   return (
     <PageLayout activePath='/play'>
-      <div className='flex flex-col px-0'>
-        {/* 播放器和选集：顶对齐导航栏，左右铺满 */}
-        <div>
-          <div className='grid lg:h-[500px] xl:h-[650px] 2xl:h-[750px] grid-cols-1 md:grid-cols-4 md:gap-0'>
+      <div className='mx-auto w-full px-3 pb-6 md:max-w-[95%] md:px-0 md:pb-10'>
+        {/* 播放器 + 选集：桌面端合并为一张圆角卡片，移动端保持全宽沉浸 */}
+        <div className='-mx-3 overflow-hidden md:mx-0 md:mt-4 md:rounded-2xl md:bg-white md:shadow-sm md:ring-1 md:ring-black/5 lg:mt-6 dark:md:bg-white/[0.03] dark:md:ring-white/10'>
+          <div className='grid grid-cols-1 md:grid-cols-4 lg:h-[500px] xl:h-[650px] 2xl:h-[750px]'>
             {/* 播放器 */}
             <div className='h-full md:col-span-3'>
               <div className='relative isolate w-full h-[300px] lg:h-full'>
@@ -139,6 +141,35 @@ export default function PlayClient() {
                             : ''
                         }
                       />
+                      {/* 进度条悬停预览：跟随鼠标，抽帧图 + 时间点 */}
+                      {preview?.visible && (
+                        <div
+                          className='moontv-progress-preview pointer-events-none absolute z-40'
+                          style={{
+                            left: `clamp(calc(5rem + 8px), ${preview.left}%, calc(100% - 5rem - 8px))`,
+                            bottom: 'calc(var(--art-bottom-height, 52px) - 16px)',
+                            transform: 'translateX(-50%)',
+                          }}
+                        >
+                          <div className='relative h-[90px] w-40 overflow-hidden rounded-md bg-black shadow-xl ring-1 ring-white/20'>
+                            {preview.image ? (
+                              <img
+                                src={preview.image}
+                                alt=''
+                                className='block h-full w-full max-w-none object-contain'
+                                draggable={false}
+                              />
+                            ) : (
+                              <div className='flex h-full w-full items-center justify-center bg-black/60 text-xs text-white/40'>
+                                加载中…
+                              </div>
+                            )}
+                            <span className='absolute bottom-1 left-1/2 -translate-x-1/2 rounded bg-black/75 px-1.5 py-0.5 text-xs font-medium tabular-nums text-white'>
+                              {formatTime(preview.time)}
+                            </span>
+                          </div>
+                        </div>
+                      )}
                       {/* 弹幕选择器 / 缓存管理 / 提示：挂进播放器节点，网页全屏与原生全屏都能看见 */}
                       {showDanmakuSelector && (
                         <div
@@ -193,7 +224,7 @@ export default function PlayClient() {
             </div>
 
             {/* 选集和换源 */}
-            <div className='h-[300px] lg:h-full md:overflow-hidden md:col-span-1'>
+            <div className='h-[300px] border-t border-black/5 md:col-span-1 md:overflow-hidden md:border-l md:border-t-0 lg:h-full dark:border-white/10'>
               <EpisodeSelector
                 totalEpisodes={totalEpisodes}
                 episodes_titles={detail?.episodes_titles || []}
@@ -217,23 +248,25 @@ export default function PlayClient() {
         </div>
 
         {/* 详情展示 */}
-        <div className='px-0 lg:px-[5rem] 2xl:px-32 mt-4 md:mt-6 xl:mt-8'>
-          <VideoDetailPanel
-            videoTitle={videoTitle}
-            videoYear={videoYear}
-            totalEpisodes={totalEpisodes}
-            currentEpisodeIndex={currentEpisodeIndex}
-            detail={detail}
-            favorited={favorited}
-            following={following}
-            onToggleFavorite={handleToggleFavorite}
-            onToggleFollowing={handleToggleFollowing}
-            videoUrl={videoUrl}
-            videoDoubanId={videoDoubanId}
-            currentSource={currentSource}
-            currentId={currentId}
-            onDownload={() => setShowAddDownload(true)}
-          />
+        <div className='mt-4 md:mt-6'>
+          <div className='rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5 md:p-6 dark:bg-white/[0.03] dark:ring-white/10'>
+            <VideoDetailPanel
+              videoTitle={videoTitle}
+              videoYear={videoYear}
+              totalEpisodes={totalEpisodes}
+              currentEpisodeIndex={currentEpisodeIndex}
+              detail={detail}
+              favorited={favorited}
+              following={following}
+              onToggleFavorite={handleToggleFavorite}
+              onToggleFollowing={handleToggleFollowing}
+              videoUrl={videoUrl}
+              videoDoubanId={videoDoubanId}
+              currentSource={currentSource}
+              currentId={currentId}
+              onDownload={() => setShowAddDownload(true)}
+            />
+          </div>
         </div>
       </div>
 
