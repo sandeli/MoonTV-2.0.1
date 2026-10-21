@@ -71,7 +71,7 @@ export interface CacheSettings {
   maxBytesPerEpisode: number;
   /** 全部缓存最大占用（字节） */
   maxTotalBytes: number;
-  /** 是否走 /api/m3u8 同源代理（false 时直接缓存源站绝对 URL） */
+  /** 直连失败时是否允许同源代理兜底；同时决定缓存键格式以兼容旧缓存 */
   useProxy: boolean;
 }
 
@@ -744,9 +744,9 @@ export function normalizeSegmentUrl(url: string): string {
 /**
  * 生成片段缓存键。
  *
- * - `useProxy = true`：转成同源的 `/api/m3u8?url=...`，键稳定，且天然规避源站
- *   的 Referer / CORS 校验；
- * - `useProxy = false`：直接用源站绝对 URL 作为键，省掉服务端带宽。
+ * - `useProxy = true`：使用同源的 `/api/m3u8?url=...` 格式；
+ * - `useProxy = false`：使用源站绝对 URL 格式。
+ * 缓存键格式独立于下载路由：预取始终优先直连，按设置允许代理兜底。
  */
 export function buildSegmentCacheKey(
   segmentUrl: string,

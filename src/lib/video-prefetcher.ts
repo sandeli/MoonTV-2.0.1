@@ -65,7 +65,7 @@ export interface PrefetchOptions {
   lookBehindSeconds?: number;
   /** 覆盖缓存模式的并发数（上限 32）：并发太高会抢播放的带宽 */
   concurrency?: number;
-  /** 覆盖 settings.useProxy */
+  /** 覆盖 settings.useProxy：直连失败时是否允许代理兜底 */
   useProxy?: boolean;
   /**
    * 期望缓存的画面高度（如 1080）。
@@ -166,6 +166,7 @@ export class VideoPrefetcher {
   private windowTo = 0;
   /** 队列已覆盖到播放列表末尾：此时无论请求多大视野都无事可做 */
   private reachedEnd = false;
+  private accessDenied = false;
   private throttled = false;
   private resumeWaiters: Array<() => void> = [];
   private stats: PrefetchStats = { ...IDLE_STATS };
@@ -215,6 +216,11 @@ export class VideoPrefetcher {
     };
     const skipWindowKey = `${skipIntro}:${skipOutro}`;
     const sameSkipWindow = this.skipWindowKey === skipWindowKey;
+
+    if (sameEpisode && sameVariant && sameSkipWindow && this.accessDenied) {
+      this.emit(options, this.stats);
+      return;
+    }
 
     // 队列已经覆盖到播放列表末尾，且当前播放位置落在已覆盖区间内：
     // 再叫也不会多出可缓存的片段。
@@ -298,6 +304,7 @@ export class VideoPrefetcher {
     this.windowFrom = 0;
     this.windowTo = 0;
     this.reachedEnd = false;
+    this.accessDenied = false;
     this.throttled = false;
 
     const waiters = this.resumeWaiters;
@@ -521,11 +528,24 @@ export class VideoPrefetcher {
     let lastEvictAt = Date.now();
     /** 存储配额耗尽：淘汰也腾不出空间，继续拉分片只会白烧流量 */
     let storageFull = false;
+    let accessError: string | undefined;
+    const proxyOrigins = new Set<string>();
+    const requests = new AbortController();
+    const cancelRequests = () => requests.abort();
+    signal.addEventListener('abort', cancelRequests, { once: true });
+    if (signal.aborted) requests.abort();
+    const denyAccess = (message: string) => {
+      if (accessError || signal.aborted) return;
+      accessError = message;
+      this.accessDenied = true;
+      requests.abort();
+      this.setThrottled(false);
+    };
 
     const worker = async (): Promise<void> => {
-      while (!signal.aborted && !storageFull) {
+      while (!signal.aborted && !storageFull && !accessError) {
         await this.waitWhileThrottled(signal);
-        if (signal.aborted) return;
+        if (signal.aborted || accessError) return;
 
         const slot = cursor;
         cursor += 1;
@@ -533,10 +553,11 @@ export class VideoPrefetcher {
 
         const segmentIndex = queue[slot];
         const range = task.segmentByteRanges?.[segmentIndex];
-        const requestUrl = buildSegmentCacheKey(
+        const directUrl = buildSegmentCacheKey(
           task.tsUrlList[segmentIndex],
-          useProxy
+          false
         );
+        const origin = new URL(directUrl).origin;
         const cacheKey = buildSegmentCacheKey(
           task.tsUrlList[segmentIndex],
           useProxy,
@@ -545,30 +566,70 @@ export class VideoPrefetcher {
 
         try {
           const alreadyCached = await hasCachedSegment(cacheKey);
-          if (signal.aborted) return;
+          if (signal.aborted || accessError) return;
           if (alreadyCached) {
             await refreshStats();
             continue;
           }
 
           const startedAt = Date.now();
-          const response = await fetch(requestUrl, {
-            signal,
+          const requestOptions: RequestInit = {
+            signal: requests.signal,
             credentials: 'omit',
             cache: 'no-store',
             headers: range ? { Range: byteRangeHeader(range) } : undefined,
-          });
-          if (!response.ok) {
-            this.emit(options, {
-              message: `片段 ${segmentIndex + 1} 预取失败 ${response.status}`,
-            });
-            continue;
+          };
+          const loadSegment = async (url: string) => {
+            const response = await fetch(url, requestOptions);
+            if (!response.ok) {
+              await response.body?.cancel();
+              throw new Error(`HTTP ${response.status}`);
+            }
+            const buffer = await readByteRangeResponse(response, range);
+            return { response, buffer };
+          };
+          const proxyUrl = buildSegmentCacheKey(
+            task.tsUrlList[segmentIndex],
+            true
+          );
+          const proxyPreferred = useProxy && proxyOrigins.has(origin);
+          let segment: Awaited<ReturnType<typeof loadSegment>>;
+          try {
+            segment = await loadSegment(proxyPreferred ? proxyUrl : directUrl);
+          } catch (error) {
+            if (requests.signal.aborted) return;
+            const reason =
+              error instanceof Error ? error.message : '网络请求失败';
+            if (proxyPreferred || !useProxy) {
+              denyAccess(
+                `${
+                  proxyPreferred ? '代理' : '直连'
+                }缓存下载失败（${reason}），请更换播放源`
+              );
+              return;
+            }
+            // Prefer the browser's network; remember a successful proxy fallback
+            // for this origin, without changing cache keys or byte-range headers.
+            try {
+              segment = await loadSegment(proxyUrl);
+              proxyOrigins.add(origin);
+            } catch (proxyError) {
+              if (requests.signal.aborted) return;
+              const proxyReason =
+                proxyError instanceof Error
+                  ? proxyError.message
+                  : '网络请求失败';
+              denyAccess(
+                `直连失败（${reason}），代理也失败（${proxyReason}），请更换播放源`
+              );
+              return;
+            }
           }
 
-          const buffer = await readByteRangeResponse(response, range);
+          const { response, buffer } = segment;
           const costMs = Math.max(1, Date.now() - startedAt);
 
-          if (signal.aborted) return;
+          if (signal.aborted || accessError) return;
           const putResult = await putCachedSegmentResilient(
             cacheKey,
             buffer,
@@ -600,11 +661,11 @@ export class VideoPrefetcher {
             lastAccess: Date.now(),
           });
 
-          if (signal.aborted) return;
+          if (signal.aborted || accessError) return;
           await refreshStats();
         } catch {
           // 单个片段失败（含 abort）不影响整轮，继续下一个
-          if (signal.aborted) return;
+          if (signal.aborted || accessError) return;
         }
 
         if (Date.now() - lastEvictAt > EVICT_INTERVAL_MS) {
@@ -616,15 +677,23 @@ export class VideoPrefetcher {
       }
     };
 
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, queue.length) }, worker)
-    );
+    try {
+      await Promise.all(
+        Array.from({ length: Math.min(concurrency, queue.length) }, worker)
+      );
+    } finally {
+      signal.removeEventListener('abort', cancelRequests);
+    }
     if (signal.aborted) return;
 
     await enforceQuota(settings);
     if (signal.aborted) return;
     await refreshStats(true);
     if (signal.aborted) return;
+    if (accessError) {
+      this.emit(options, { state: 'error', message: accessError }, true);
+      return;
+    }
     if (storageFull) {
       // 用 `error` 而不是 `done`：得让 tooltip 原样显示这条 message，
       // 否则用户只会看到计数器停在某一格，不知道是磁盘写不进去了。
