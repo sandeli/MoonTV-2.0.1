@@ -18,26 +18,21 @@ export function matchesFullSearchTitle(title: string, query: string): boolean {
 const SEARCH_TITLE_SEPARATORS =
   /[().,!?;:#&|/~\\\u3002\uff0c\u3001\uff01\uff1f\uff1b\uff1a\uff03\uff06\uff5c\uff0f\uff3c\uff5e\u301c\u2026]/;
 
-/** Parentheses are ordinary separators, whether paired or not. */
+/** Use the longest nonempty fragment; ties keep the first fragment. */
 function getMainTitle(title: string): string {
-  const normalized = title.replace(/\uff08/g, '(').replace(/\uff09/g, ')');
-  let titleEnd = normalized.length;
-
-  for (let i = 0; i < normalized.length; i++) {
-    if (!SEARCH_TITLE_SEPARATORS.test(normalized[i])) continue;
-    // Keep decimal numbers in titles such as "Version 2.0".
-    if (
-      normalized[i] === '.' &&
-      /\d/.test(normalized[i - 1] ?? '') &&
-      /\d/.test(normalized[i + 1] ?? '')
-    ) {
-      continue;
+  const normalized = title
+    .replace(/\uff08/g, '(')
+    .replace(/\uff09/g, ')')
+    .trim()
+    .replace(/\s+/g, ' ');
+  let longest = '';
+  for (const fragment of normalized.split(SEARCH_TITLE_SEPARATORS)) {
+    const candidate = fragment.trim();
+    if (Array.from(candidate).length > Array.from(longest).length) {
+      longest = candidate;
     }
-    titleEnd = i;
-    break;
   }
-
-  return normalized.slice(0, titleEnd).trim().replace(/\s+/g, ' ');
+  return longest;
 }
 
 export function getFallbackSearchQuery(query: string): string | null {
