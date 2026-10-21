@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { downloadTsSegment, parseM3U8 } from '@/lib/m3u8-downloader';
-import { validateMediaUrl } from '@/lib/url-guard';
+import { parseM3U8 } from '@/lib/m3u8-downloader';
+import { fetchMediaUrl, validateMediaUrl } from '@/lib/url-guard';
 
 export const runtime = 'edge';
 
@@ -26,7 +26,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const task = await parseM3U8(url);
+    const task = await parseM3U8(url, 0, {
+      signal: request.signal,
+      validateUrls: true,
+    });
 
     return NextResponse.json({
       success: true,
@@ -89,15 +92,19 @@ export async function GET(request: NextRequest) {
         !Number.isSafeInteger(end) ||
         end < start
       ) {
-        return NextResponse.json({ error: '无效的 Range 请求' }, { status: 400 });
+        return NextResponse.json(
+          { error: '无效的 Range 请求' },
+          { status: 400 }
+        );
       }
-      const response = await fetch(url, {
+      const response = await fetchMediaUrl(url, {
         headers: { Range: range, 'Accept-Encoding': 'identity' },
         signal: request.signal,
         cache: 'no-store',
       });
       const headers = new Headers({
-        'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream',
+        'Content-Type':
+          response.headers.get('Content-Type') || 'application/octet-stream',
         'Cache-Control': 'no-store',
         Vary: 'Range',
       });
@@ -111,12 +118,14 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    const data = await downloadTsSegment(url);
-    
-    return new NextResponse(data, {
+    const response = await fetchMediaUrl(url, { signal: request.signal });
+
+    return new NextResponse(response.body, {
+      status: response.status,
       headers: {
-        'Content-Type': 'application/octet-stream',
-        'Cache-Control': 'public, max-age=31536000',
+        'Content-Type':
+          response.headers.get('Content-Type') || 'application/octet-stream',
+        'Cache-Control': response.ok ? 'public, max-age=31536000' : 'no-store',
       },
     });
   } catch (error) {

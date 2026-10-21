@@ -215,7 +215,17 @@ function openMetaDb(): Promise<IDBDatabase> {
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      db.onclose = () => {
+        dbPromise = null;
+      };
+      resolve(db);
+    };
     request.onerror = () => reject(request.error);
   });
 
@@ -236,7 +246,13 @@ function runTx<T>(
       new Promise<T>((resolve, reject) => {
         const transaction = db.transaction(META_STORE, mode);
         const request = fn(transaction.objectStore(META_STORE));
-        request.onsuccess = () => resolve(request.result as T);
+        // Request success precedes commit; a transaction may still abort.
+        transaction.oncomplete = () => resolve(request.result as T);
+        transaction.onabort = () =>
+          reject(
+            transaction.error || new Error('Metadata transaction aborted')
+          );
+        transaction.onerror = () => reject(transaction.error);
         request.onerror = () => reject(request.error);
       })
   );
@@ -275,6 +291,9 @@ export async function touchMeta(key: string): Promise<void> {
     return previous !== undefined && now - previous < TOUCH_INTERVAL_MS;
   });
   if (throttled) return;
+  for (const [entry, touchedAt] of Array.from(lastTouchAt)) {
+    if (now - touchedAt >= TOUCH_INTERVAL_MS) lastTouchAt.delete(entry);
+  }
   variants.forEach((v) => lastTouchAt.set(v, now));
 
   try {
@@ -760,7 +779,7 @@ export async function putCachedSegment(
   contentType?: string | null
 ): Promise<void> {
   const cache = await openVideoCache();
-  if (!cache) return;
+  if (!cache) throw new Error('Video cache storage unavailable');
 
   await cache.put(
     key,

@@ -91,10 +91,10 @@
   "lint-staged": {
     "**/*.{js,jsx,ts,tsx}": [
       "eslint --max-warnings=0",
-      "prettier -w"
+      "prettier --plugin-search-dir .husky -w"
     ],
     "**/*.{json,css,scss,md,webmanifest}": [
-      "prettier -w"
+      "prettier --plugin-search-dir .husky -w"
     ]
   },
   "packageManager": "pnpm@10.14.0"

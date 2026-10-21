@@ -91,6 +91,7 @@ const FALLBACK_MAX_SEGMENTS = 200;
 
 /** 进度回调最小间隔，避免高频写 React state */
 const EMIT_INTERVAL_MS = 250;
+const STATS_REFRESH_INTERVAL_MS = 2_000;
 
 /** 淘汰检查间隔 */
 const EVICT_INTERVAL_MS = 15_000;
@@ -159,6 +160,7 @@ export class VideoPrefetcher {
   /** 本轮队列使用的码率档位（画面高度），null 表示"最高带宽" */
   private preferredHeight: number | null = null;
   private skipWindowKey = '';
+  private sourceKey = '';
   /** 当前已排入队列的覆盖区间 [windowFrom, windowTo]（秒） */
   private windowFrom = 0;
   private windowTo = 0;
@@ -178,6 +180,7 @@ export class VideoPrefetcher {
 
     const settings = loadCacheSettings();
     if (!settings.enabled) {
+      this.stop();
       this.emit(
         options,
         { state: 'disabled', message: '已关闭视频缓存' },
@@ -186,6 +189,7 @@ export class VideoPrefetcher {
       return;
     }
     if (!shouldPrefetch()) {
+      this.stop();
       this.emit(
         options,
         { state: 'disabled', message: '当前网络环境已跳过缓存' },
@@ -194,7 +198,11 @@ export class VideoPrefetcher {
       return;
     }
 
-    const sameEpisode = this.episodeKey === options.episodeKey;
+    const sourceKey = `${options.m3u8Url}|${
+      options.useProxy ?? settings.useProxy
+    }`;
+    const sameEpisode =
+      this.episodeKey === options.episodeKey && this.sourceKey === sourceKey;
     // 档位变了（用户手动切画质）就必须重建队列：不同档位的分片 URL 不同，
     // 旧队列缓存的分片与新请求对不上，继续跑只是白烧带宽。
     const preferredHeight = options.preferredHeight ?? null;
@@ -254,6 +262,7 @@ export class VideoPrefetcher {
     const controller = new AbortController();
     this.controller = controller;
     this.episodeKey = options.episodeKey;
+    this.sourceKey = sourceKey;
     this.preferredHeight = preferredHeight;
     this.skipWindowKey = skipWindowKey;
 
@@ -361,6 +370,7 @@ export class VideoPrefetcher {
       // 档位透传给解析器：主播放列表有多个码率时只取与当前播放一致的那一档
       task = await parseM3U8(options.m3u8Url, 0, {
         height: options.preferredHeight ?? null,
+        signal,
       });
     } catch {
       if (signal.aborted) return;
@@ -445,10 +455,13 @@ export class VideoPrefetcher {
     let lastStatsAt = 0;
     let statsRefresh: Promise<void> | null = null;
     const refreshStats = async (force = false): Promise<void> => {
-      if (statsRefresh) await statsRefresh;
+      if (statsRefresh) {
+        await statsRefresh;
+        if (!force) return;
+      }
       if (
         signal.aborted ||
-        (!force && Date.now() - lastStatsAt < EMIT_INTERVAL_MS)
+        (!force && Date.now() - lastStatsAt < STATS_REFRESH_INTERVAL_MS)
       )
         return;
       lastStatsAt = Date.now();
