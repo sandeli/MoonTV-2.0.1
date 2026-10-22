@@ -28,6 +28,7 @@ import {
 import {
   AUTO_LEVEL,
   buildQualityOptions,
+  decideDownshift,
   describeLevel,
   describeQualityPreference,
   loadPreferredQualityHeight,
@@ -113,6 +114,23 @@ declare global {
  * 无上限的自动换源只会把候选列表扫成死循环（A→B→C→A...）。
  */
 const MAX_AUTO_SOURCE_SWITCHES = 3;
+
+/**
+ * seek 之后这段时间内的 `waiting` 不计入「网络卡顿」（毫秒）。
+ *
+ * 拖动进度条会让 hls.js 立刻 flush 前向缓冲并重新取分片，落地分片还没到就会
+ * 抛一次 `waiting`——它说明的是「刚跳过去、还在下载」，跟带宽够不够无关。
+ * 若把它算成卡顿，拖一次进度条就等于报告一次「网络波动」，会把画质一路降到底。
+ */
+const STALL_GRACE_AFTER_SEEK_MS = 4_000;
+
+/**
+ * ABR 换档之后这段时间内的 `waiting` 同样不计入卡顿。
+ *
+ * hls.js 换档时会 flush 缓冲并重新下载当前片段，这段时间的缓冲停顿是换档
+ * 本身造成的，不能反过来当成「带宽还不够」的证据继续往下压档位。
+ */
+const STALL_GRACE_AFTER_LEVEL_SWITCH_MS = 3_000;
 
 /** 「画质」设置项的 name，`setting.update` 靠它定位 */
 const QUALITY_SETTING_NAME = '画质';
@@ -249,6 +267,10 @@ export function usePlayEngine() {
   const stallTimesRef = useRef<number[]>([]);
   // 记录已提示过的降档状态，避免 notice 反复弹
   const downshiftNoticeRef = useRef<string | null>(null);
+  // 最近一次 seek / ABR 换档的时间戳：用于把「seek、换档引起的重新缓冲」
+  // 与「播放中真的网络跟不上」区分开，见 STALL_GRACE_AFTER_* 常量。
+  const lastSeekAtRef = useRef(0);
+  const lastLevelSwitchAtRef = useRef(0);
 
   const [isBlockAdChanged, setIsBlockAdChanged] = useState(false);
   // 去广告开关（从 localStorage 继承，默认 true）
@@ -2241,10 +2263,28 @@ export function usePlayEngine() {
       const syncQualitySetting = (hls: any) => {
         const levels = Array.isArray(hls.levels) ? hls.levels : [];
         const preferred = preferredHeightRef.current;
+        const art = artPlayerRef.current;
+
+        // 单档位源：没有"可切换的画质"，也没有"可降的档"。
+        // 此时仍摆出「自动 / 最高画质 / 唯一档位」三项纯属误导，所以把设置项
+        // 退化成只读一行（✓ + 当前清晰度）——不替换成空 selector，否则
+        // ArtPlayer 会渲染出一个 0 项的子面板。
+        if (levels.length <= 1) {
+          if (art) {
+            updateSettingPreservingPanel(art, {
+              name: QUALITY_SETTING_NAME,
+              tooltip:
+                levels.length === 1 ? describeLevel(levels[0]) : '未提供',
+              selector: undefined,
+            });
+          }
+          // 唯一一档由 ABR 直接锁死，不需要写 currentLevel（那会关掉 autoLevel）
+          return;
+        }
+
         const matchedIndex =
           preferred === null ? AUTO_LEVEL : pickLevelIndex(levels, preferred);
 
-        const art = artPlayerRef.current;
         if (art) {
           updateSettingPreservingPanel(art, {
             name: QUALITY_SETTING_NAME,
@@ -2351,6 +2391,10 @@ export function usePlayEngine() {
             // 否则换源后 ABR 会被上一个源的网络状况压着
             stallTimesRef.current = [];
             downshiftNoticeRef.current = null;
+            // seek / 换档的时间戳同样要清空：新实例挂载时的那次 buffering
+            // 属于初始化，不该被当成网络卡顿
+            lastSeekAtRef.current = 0;
+            lastLevelSwitchAtRef.current = Date.now();
 
             // 播放列表解析成功：建立画质档位，并确认链路可用
             hls.on(Hls.Events.MANIFEST_PARSED, function () {
@@ -2361,9 +2405,14 @@ export function usePlayEngine() {
             hls.on(
               Hls.Events.LEVEL_SWITCHED,
               function (_event: any, data: any) {
+                // 换档会 flush 缓冲重新下载，这段时间的停顿不算网络卡顿
+                lastLevelSwitchAtRef.current = Date.now();
                 const level = hls.levels?.[data?.level];
+                // 单档位源没有"自动/手动"之别，直接显示该档清晰度即可
+                const singleLevel =
+                  Array.isArray(hls.levels) && hls.levels.length <= 1;
                 updateQualityTooltip(
-                  hls.autoLevelEnabled
+                  hls.autoLevelEnabled && !singleLevel
                     ? `自动${level ? ` · ${describeLevel(level)}` : ''}`
                     : describeLevel(level)
                 );
@@ -2543,13 +2592,14 @@ export function usePlayEngine() {
           },
           {
             // 画质切换（P1-6）。档位列表在 MANIFEST_PARSED 后由
-            // syncQualitySetting() 动态写入，这里先给个占位。
-            // 占位用 `selector`（而不是 onClick）是刻意为之：ArtPlayer 只有
-            // 在 item 带 selector 时才会渲染成可展开的子面板。
+            // syncQualitySetting() 动态写入。
+            // 这里**不预设 selector**：否则播放列表解析完成前会短暂出现一个
+            // 只有「自动」一项的子面板，而单档位源根本不支持切换画质。
+            // （item 的 kind 由 ArtPlayer 按 selector/switch/onClick 推断，
+            // 先只有 onSelect 就渲染成不可展开的普通行，等价于"只读"。）
             name: QUALITY_SETTING_NAME,
             html: QUALITY_SETTING_NAME,
             tooltip: '自动',
-            selector: [{ html: '自动', value: AUTO_LEVEL, default: true }],
             onSelect: function (item: any) {
               const value = Number(item.value);
               const hls = artPlayerRef.current?.video?.hls;
@@ -2783,10 +2833,13 @@ export function usePlayEngine() {
       // ---------------------------------------------------------------------
       // 跳转开始即中止旧请求，保留统计和已写入缓存；落点确定后重新排队。
       artPlayerRef.current.on('video:seeking', () => {
+        // 记录 seek 时间：紧接着的 waiting 是"跳过去还在下载"，不是网络波动
+        lastSeekAtRef.current = Date.now();
         prefetcherRef.current.stop(true);
         setCacheBandwidthThrottled(true);
       });
       artPlayerRef.current.on('video:seeked', () => {
+        lastSeekAtRef.current = Date.now();
         prefetcherRef.current.stop(true);
         ensurePrefetchCurrent(artPlayerRef.current.currentTime || 0);
       });
@@ -2794,12 +2847,26 @@ export function usePlayEngine() {
       // 播放卡顿时让出带宽，恢复后继续预取。
       // 注意：这是"临时让路"，不是"视频暂停就停缓存"。
       artPlayerRef.current.on('video:waiting', () => {
-        setCacheBandwidthThrottled(!artPlayerRef.current?.video?.paused);
+        const media = artPlayerRef.current?.video;
+        setCacheBandwidthThrottled(!media?.paused);
 
         // —— 弱网自动降档 ——
-        // seek/换源也会触发 waiting，因此 5 秒内的重复事件只记一次；
-        // 2 分钟内累计 4 次视为网络跟不上当前档位，把 ABR 上限压一档。
+        // 只有"边播边等"才算卡顿：seek、ABR 换档、换源都会让 hls.js 重新
+        // 缓冲并立刻抛一次 waiting，它们说明不了带宽。把这类等待算成卡顿，
+        // 每拖一次进度条就会压一次 ABR 上限；而每次换档又会 flush 前向缓冲，
+        // 正在等数据的 seek 因此被打回旧位置——这就是"越拖越回退"的死循环。
         const now = Date.now();
+        if (
+          !media ||
+          media.seeking ||
+          media.readyState === 0 ||
+          now - lastSeekAtRef.current < STALL_GRACE_AFTER_SEEK_MS ||
+          now - lastLevelSwitchAtRef.current < STALL_GRACE_AFTER_LEVEL_SWITCH_MS
+        ) {
+          return;
+        }
+        // 5 秒内的重复事件只记一次；2 分钟内累计 4 次视为网络跟不上当前档位，
+        // 把 ABR 上限压一档。
         const stalls = stallTimesRef.current;
         if (stalls.length === 0 || now - stalls[stalls.length - 1] >= 5_000) {
           stalls.push(now);
@@ -2809,34 +2876,41 @@ export function usePlayEngine() {
         }
 
         const hls = artPlayerRef.current?.video?.hls;
-        if (!hls || !hls.autoLevelEnabled) return; // 手动档位由用户自己负责
+        if (!hls) return;
         if (stalls.length < 4) return;
 
-        const currentLevel =
-          typeof hls.loadLevel === 'number' && hls.loadLevel >= 0
-            ? hls.loadLevel
-            : typeof hls.currentLevel === 'number' && hls.currentLevel >= 0
-            ? hls.currentLevel
-            : 0;
-        const cap =
-          typeof hls.autoLevelCapping === 'number' && hls.autoLevelCapping >= 0
-            ? hls.autoLevelCapping
-            : Number.POSITIVE_INFINITY;
-        const nextCap = Math.max(0, Math.min(currentLevel, cap) - 1);
+        // 决策下沉到 decideDownshift()：手动锁档不插手，
+        // **单档位源直接判定"无可降档"**（压 ABR 上限只会把唯一一档钉死，
+        // 还会白触发一次换档 flush），只有真正多档位时才压上限。
+        const decision = decideDownshift({
+          levels: Array.isArray(hls.levels) ? hls.levels : [],
+          autoLevelEnabled: hls.autoLevelEnabled === true,
+          currentLevel:
+            typeof hls.loadLevel === 'number' && hls.loadLevel >= 0
+              ? hls.loadLevel
+              : typeof hls.currentLevel === 'number' && hls.currentLevel >= 0
+              ? hls.currentLevel
+              : 0,
+          autoLevelCapping: hls.autoLevelCapping,
+        });
 
-        if (cap === 0) {
-          // 已经是最低档还在卡：提示换源，不再重复弹
-          if (downshiftNoticeRef.current !== 'min') {
-            downshiftNoticeRef.current = 'min';
+        if (decision.action === 'none') return;
+
+        if (decision.action === 'advise-source') {
+          // 已经无可降，只能提示换源；同一个原因只弹一次
+          if (downshiftNoticeRef.current !== decision.reason) {
+            downshiftNoticeRef.current = decision.reason;
             artPlayerRef.current.notice.show =
-              '已降至最低画质仍卡顿，建议在右侧换一个播放源';
+              decision.reason === 'single-level'
+                ? '当前片源只有一档画质，卡顿建议更换播放源'
+                : '已降至最低画质仍卡顿，建议在右侧换一个播放源';
           }
           return;
         }
 
-        hls.autoLevelCapping = nextCap;
-        if (downshiftNoticeRef.current !== `cap-${nextCap}`) {
-          downshiftNoticeRef.current = `cap-${nextCap}`;
+        hls.autoLevelCapping = decision.nextCap;
+        if (downshiftNoticeRef.current !== `cap-${decision.nextCap}`) {
+          downshiftNoticeRef.current = `cap-${decision.nextCap}`;
           artPlayerRef.current.notice.show =
             '检测到网络较慢，已自动降低画质以减少卡顿';
         }
