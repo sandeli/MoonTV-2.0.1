@@ -87,6 +87,7 @@ import {
   saveDanmakuSettings,
   SkipConfig,
 } from './play-utils';
+import { clearPlayerNotices, pushPlayerNotice } from './player-notice';
 import { PreviewThumbnailer } from './preview-thumbnailer';
 
 /** 进度条悬停预览浮层的实时状态 */
@@ -141,11 +142,8 @@ const CACHE_SETTING_NAME = '视频缓存';
 /** 「弹幕源」设置项的 name */
 const DANMAKU_SETTING_NAME = '弹幕源';
 
-/** 自动加载弹幕时在播放器内置 notice 中展示的文案 */
+/** 自动加载弹幕的常驻提示文案 */
 const DANMAKU_LOADING_NOTICE_TEXT = '正在自动加载弹幕…';
-
-/** 内置 notice 默认 2 秒自动消失，自动加载期间按此间隔续期以保持常显 */
-const DANMAKU_LOADING_NOTICE_REFRESH_MS = 1500;
 
 /**
  * 下一集预热的覆盖时长（秒）。
@@ -246,8 +244,10 @@ export function usePlayEngine() {
   });
   const skipConfigRef = useRef(skipConfig);
   const restartPrefetchForSkipRef = useRef<(() => void) | null>(null);
-  /** 已提示过的缓存错误，避免同一错误在左下角反复闪现 */
-  const cacheErrorNoticeRef = useRef<string | null>(null);
+  /** 已提示过的缓存停止原因（状态 + 文案），避免同一原因反复闪现 */
+  const cacheNoticeRef = useRef<string | null>(null);
+  /** 进入播放页时是否已就「缓存已开启」提示过（切集不重复） */
+  const cacheEnabledNoticeShownRef = useRef(false);
   useEffect(() => {
     skipConfigRef.current = skipConfig;
     restartPrefetchForSkipRef.current?.();
@@ -1319,6 +1319,12 @@ export function usePlayEngine() {
       }
       if (!success) {
         triggerGlobalError('自动加载弹幕失败，请手动选择弹幕源');
+        // 全屏下页面级浮层不可见，播放器内再提示一次
+        pushPlayerNotice(
+          artPlayerRef.current,
+          '自动加载弹幕失败，请手动选择弹幕源',
+          { key: 'danmaku-auto-load-failed', durationMs: 8000 }
+        );
       }
       if (!abortController.signal.aborted) {
         setIsDanmakuLoading(false);
@@ -1340,37 +1346,23 @@ export function usePlayEngine() {
     preferredDanmakuPlatform,
   ]);
 
-  // 自动加载弹幕的提示改用播放器内置 notice（左下角文字提示），
-  // 这样网页全屏 / 原生全屏下同样可见，也不再需要页面级浮层。
+  // 自动加载弹幕期间在播放器右上角常驻提示，不顶掉其它提示
   useEffect(() => {
     const art = artPlayerRef.current;
     if (!art) return;
 
-    const noticeInner = art.template?.$noticeInner as HTMLElement | undefined;
-    const isShowingLoadingNotice = () =>
-      noticeInner?.textContent === DANMAKU_LOADING_NOTICE_TEXT;
-
     if (!isDanmakuLoading) {
-      if (isShowingLoadingNotice()) art.notice.show = '';
+      clearPlayerNotices(art, 'danmaku-loading');
       return;
     }
 
-    const syncNotice = () => {
-      // 正在展示其它提示（音量、跳过片头等）时先让位，等它消失后再补上
-      if (!noticeInner?.textContent || isShowingLoadingNotice()) {
-        art.notice.show = DANMAKU_LOADING_NOTICE_TEXT;
-      }
-    };
-
-    syncNotice();
-    const refreshTimer = window.setInterval(
-      syncNotice,
-      DANMAKU_LOADING_NOTICE_REFRESH_MS
-    );
+    pushPlayerNotice(art, DANMAKU_LOADING_NOTICE_TEXT, {
+      key: 'danmaku-loading',
+      durationMs: 0,
+    });
 
     return () => {
-      window.clearInterval(refreshTimer);
-      if (isShowingLoadingNotice()) art.notice.show = '';
+      clearPlayerNotices(art, 'danmaku-loading');
     };
   }, [isDanmakuLoading, playerHost]);
 
@@ -1594,9 +1586,7 @@ export function usePlayEngine() {
       `[auto-switch] ${reason} → ${candidate.source}:${candidate.id}`
     );
     try {
-      if (artPlayerRef.current) {
-        artPlayerRef.current.notice.show = notice;
-      }
+      pushPlayerNotice(artPlayerRef.current, notice, { key: 'auto-switch' });
     } catch {
       // ArtPlayer 可能已销毁
     }
@@ -1735,14 +1725,11 @@ export function usePlayEngine() {
       }
     }
 
-    // 上箭头 = 音量+
+    // 上箭头 = 音量+（提示由 ArtPlayer 内置 notice 负责）
     if (e.key === 'ArrowUp') {
       if (artPlayerRef.current && artPlayerRef.current.volume < 1) {
         artPlayerRef.current.volume =
           Math.round((artPlayerRef.current.volume + 0.1) * 10) / 10;
-        artPlayerRef.current.notice.show = `音量: ${Math.round(
-          artPlayerRef.current.volume * 100
-        )}`;
         e.preventDefault();
       }
     }
@@ -1752,9 +1739,6 @@ export function usePlayEngine() {
       if (artPlayerRef.current && artPlayerRef.current.volume > 0) {
         artPlayerRef.current.volume =
           Math.round((artPlayerRef.current.volume - 0.1) * 10) / 10;
-        artPlayerRef.current.notice.show = `音量: ${Math.round(
-          artPlayerRef.current.volume * 100
-        )}`;
         e.preventDefault();
       }
     }
@@ -2124,19 +2108,45 @@ export function usePlayEngine() {
               buildCacheTooltip(stats, probed > 0 ? probe.hitRate : null)
             );
 
-            // 缓存任务因错误终止（存储满 / 解析失败 / 源拒绝访问等）时，
-            // 设置项 tooltip 用户看不到，把原因同步到播放器左下角提示。
-            if (stats.state === 'error' && stats.message) {
-              const noticeKey = `error:${stats.message}`;
-              if (cacheErrorNoticeRef.current !== noticeKey) {
-                cacheErrorNoticeRef.current = noticeKey;
-                if (artPlayerRef.current) {
-                  artPlayerRef.current.notice.show = `视频缓存已终止：${stats.message}`;
-                }
+            // 首次进入缓存队列时提示一次「已开启」；手动开启时已在开关处提示。
+            // 播放器未就绪（首帧 ensure 可能早于实例赋值）时不消耗这次机会。
+            if (
+              !cacheEnabledNoticeShownRef.current &&
+              (stats.state === 'parsing' || stats.state === 'running')
+            ) {
+              const art = artPlayerRef.current;
+              if (art?.template?.$player) {
+                cacheEnabledNoticeShownRef.current = true;
+                pushPlayerNotice(art, '已开启视频缓存', {
+                  key: 'cache-state',
+                });
               }
-            } else if (stats.state !== 'error') {
-              // 新一轮任务开始后允许再次提示同样的错误
-              cacheErrorNoticeRef.current = null;
+            }
+
+            // 缓存停止（error / disabled）的原因同步到右上角提示；
+            // 同一原因只提示一次，避免 ensure 高频调用时刷屏。
+            let stopMessage: string | null = null;
+            if (stats.state === 'error') {
+              stopMessage = `视频缓存已终止：${stats.message || '未知原因'}`;
+            } else if (
+              stats.state === 'disabled' &&
+              stats.message !== '已关闭视频缓存'
+            ) {
+              // 功能处于关闭状态是默认情况，不提示；弱网 / 省流量跳过才提示
+              stopMessage = stats.message || null;
+            }
+
+            if (stopMessage) {
+              const noticeKey = `${stats.state}:${stats.message}`;
+              if (cacheNoticeRef.current !== noticeKey) {
+                cacheNoticeRef.current = noticeKey;
+                pushPlayerNotice(artPlayerRef.current, stopMessage, {
+                  key: 'cache-state',
+                });
+              }
+            } else {
+              // 新一轮任务开始后允许再次提示同样的停止原因
+              cacheNoticeRef.current = null;
             }
 
             // 当前集的前向视野已经铺满 → 顺手把下一集的前几分钟也预热掉，
@@ -2667,8 +2677,12 @@ export function usePlayEngine() {
               const enabled = !item.switch;
               saveCacheSettings({ enabled });
               if (enabled) {
-                cacheErrorNoticeRef.current = null;
+                cacheNoticeRef.current = null;
+                cacheEnabledNoticeShownRef.current = true;
                 updateCacheTooltip('未开始');
+                pushPlayerNotice(artPlayerRef.current, '已开启视频缓存', {
+                  key: 'cache-state',
+                });
                 ensurePrefetchCurrent(artPlayerRef.current?.currentTime || 0);
               } else {
                 try {
@@ -2676,15 +2690,22 @@ export function usePlayEngine() {
                   getNextEpisodePrefetcher().stop();
                   nextWarmupKeyRef.current = null;
                   updateCacheTooltip('已关闭');
+                  // 与预取器 disabled 的文案一致，重复下发时只续期
+                  cacheNoticeRef.current = 'disabled:已关闭视频缓存';
+                  pushPlayerNotice(artPlayerRef.current, '已关闭视频缓存', {
+                    key: 'cache-state',
+                  });
                 } catch (error) {
-                  // 终止失败：回滚开关（缓存仍在跑），并把原因显示在左下角
+                  // 终止失败：回滚开关（缓存仍在跑），并把原因显示在右上角
                   saveCacheSettings({ enabled: true });
                   updateCacheTooltip('终止失败', true);
                   const reason =
                     error instanceof Error ? error.message : '未知错误';
-                  if (artPlayerRef.current) {
-                    artPlayerRef.current.notice.show = `终止视频缓存失败：${reason}`;
-                  }
+                  pushPlayerNotice(
+                    artPlayerRef.current,
+                    `终止视频缓存失败：${reason}`,
+                    { key: 'cache-state', durationMs: 8000 }
+                  );
                   return true;
                 }
               }
@@ -2900,10 +2921,13 @@ export function usePlayEngine() {
           // 已经无可降，只能提示换源；同一个原因只弹一次
           if (downshiftNoticeRef.current !== decision.reason) {
             downshiftNoticeRef.current = decision.reason;
-            artPlayerRef.current.notice.show =
+            pushPlayerNotice(
+              artPlayerRef.current,
               decision.reason === 'single-level'
                 ? '当前片源只有一档画质，卡顿建议更换播放源'
-                : '已降至最低画质仍卡顿，建议在右侧换一个播放源';
+                : '已降至最低画质仍卡顿，建议在右侧换一个播放源',
+              { key: 'downshift' }
+            );
           }
           return;
         }
@@ -2911,8 +2935,11 @@ export function usePlayEngine() {
         hls.autoLevelCapping = decision.nextCap;
         if (downshiftNoticeRef.current !== `cap-${decision.nextCap}`) {
           downshiftNoticeRef.current = `cap-${decision.nextCap}`;
-          artPlayerRef.current.notice.show =
-            '检测到网络较慢，已自动降低画质以减少卡顿';
+          pushPlayerNotice(
+            artPlayerRef.current,
+            '检测到网络较慢，已自动降低画质以减少卡顿',
+            { key: 'downshift' }
+          );
         }
       });
       artPlayerRef.current.on('video:playing', () => {
