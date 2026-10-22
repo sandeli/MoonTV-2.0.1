@@ -78,7 +78,7 @@ export const CACHE_CONCURRENCY_PRESETS: Record<CacheConcurrencyMode, number> = {
 export interface CacheSettings {
   /** 总开关 */
   enabled: boolean;
-  /** 切换集数时清理缓存，保留当前集与下一集预热 */
+  /** 切换集数或换片时清理缓存，保留当前集与下一集预热 */
   autoClearOnEpisodeChange: boolean;
   /** 分片下载并发数，由 concurrencyMode 决定（2 / 4 / 8），只读派生值 */
   concurrency: number;
