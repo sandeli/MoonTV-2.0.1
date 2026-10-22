@@ -133,6 +133,31 @@ const DANMAKU_SETTING_NAME = '弹幕源';
 const NEXT_EPISODE_HORIZON_SECONDS = 420;
 
 /**
+ * 会话级的「上次播放的影片」标记（`source:id`）。
+ *
+ * 换片通常是回列表再进播放页，`usePlayEngine` 会整页重新挂载，ref 里的
+ * 上一次播放位置拿不到；只能靠会话存储判断「上一部片是不是另一部」，
+ * 否则新影片开始播放时，上一部片的缓存会一直留在本地。
+ */
+const LAST_CACHE_VIDEO_KEY = 'moontv:last-cache-video';
+
+function readLastCacheVideoKey(): string | null {
+  try {
+    return window.sessionStorage.getItem(LAST_CACHE_VIDEO_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeLastCacheVideoKey(videoKey: string): void {
+  try {
+    window.sessionStorage.setItem(LAST_CACHE_VIDEO_KEY, videoKey);
+  } catch {
+    // 隐私模式等场景下 sessionStorage 不可用，仅影响换片清理，忽略即可。
+  }
+}
+
+/**
  * 组装「视频缓存」设置项的 tooltip 文案。
  *
  * `hitRate` 为 null 表示还没有任何片段请求，因此没有命中率可展示。
@@ -237,7 +262,11 @@ export function usePlayEngine() {
   // 这里直接更新 ArtPlayer 的设置项 tooltip。
   const prefetcherRef = useRef(getVideoPrefetcher());
   const cacheClearPromiseRef = useRef<Promise<void> | null>(null);
-  const previousCacheEpisodeRef = useRef<number | null>(null);
+  /** 上次触发缓存清理时的播放位置：影片标识 + 集数 */
+  const previousCacheEpisodeRef = useRef<{
+    videoKey: string;
+    episodeIndex: number;
+  } | null>(null);
 
   // 下一集预热（落地路线第 3 步）。独立实例，避免打断当前集的队列。
   // `nextWarmupKeyRef` 记录"已经为哪一集的哪个档位预热过"，防止重复排队。
@@ -397,17 +426,35 @@ export function usePlayEngine() {
     videoYear,
   ]);
 
-  // 切集时清空"已试过的源"与"自动换源次数"：
+  // 切集/换片时清空"已试过的源"与"自动换源次数"：
   // 某个源只是这一集挂了，不代表下一集也挂，不该把惩罚带到下一集。
   useEffect(() => {
-    const previousEpisode = previousCacheEpisodeRef.current;
-    previousCacheEpisodeRef.current = currentEpisodeIndex;
-    // 切集或换源立即中止旧下载，是否删除已落盘缓存由清理开关单独决定。
+    const previous = previousCacheEpisodeRef.current;
+    const videoKey = `${currentSource}:${currentId}`;
+    const hasVideoIdentity = Boolean(currentSource && currentId);
+    // 换片一般会整页重新挂载，此时 previous 还是空的，
+    // 用会话里记下的上一部片补出「换片」这个事实；
+    // 连会话记忆都没有（新标签页/新会话）说明本次播放与之前无从比对，
+    // 同样按换片处理，顺手清掉上一次会话残留的缓存。
+    const previousVideoKey =
+      previous !== null ? previous.videoKey : readLastCacheVideoKey();
+    previousCacheEpisodeRef.current = {
+      videoKey,
+      episodeIndex: currentEpisodeIndex,
+    };
+    if (hasVideoIdentity) writeLastCacheVideoKey(videoKey);
+    // 切集、换片或换源立即中止旧下载，是否删除已落盘缓存由清理开关单独决定。
     prefetcherRef.current.stop();
     getNextEpisodePrefetcher().stop();
+    // 集号变了要清（保留新的当前集与下一集预热）；
+    // 换了一部影片（源或 id 变了）时，上一部片的缓存没有任何复用价值，
+    // 即便集号恰好相同也必须清掉。
+    const isDifferentEpisode =
+      previous !== null && previous.episodeIndex !== currentEpisodeIndex;
+    const isDifferentVideo = previousVideoKey !== videoKey;
     if (
-      previousEpisode !== null &&
-      previousEpisode !== currentEpisodeIndex &&
+      hasVideoIdentity &&
+      (isDifferentEpisode || isDifferentVideo) &&
       loadCacheSettings().autoClearOnEpisodeChange
     ) {
       const previousClear = cacheClearPromiseRef.current;
@@ -416,7 +463,7 @@ export function usePlayEngine() {
         getNextEpisodePrefetcher().stopAndWait(),
       ]);
       // 新当前集可能正是已预热的下一集，同时保留它之后一集的预热。
-      const episodePrefix = `${currentSource}:${currentId}`;
+      const episodePrefix = videoKey;
       const keepEpisodeKeys = [
         `${episodePrefix}:${currentEpisodeIndex}`,
         `${episodePrefix}:${currentEpisodeIndex + 1}`,
@@ -426,7 +473,7 @@ export function usePlayEngine() {
         await stopped;
         await clearVideoCache(keepEpisodeKeys);
       })().catch((error) => {
-        console.error('切集自动清理缓存失败:', error);
+        console.error('切集/换片自动清理缓存失败:', error);
       });
       cacheClearPromiseRef.current = clearing;
       void clearing.finally(() => {
