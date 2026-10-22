@@ -5,14 +5,14 @@
  * 所有值以 1280px 视口为基准换算成 vw，让元素尺寸随屏幕连续变化。
  */
 :root {
-  --nav-h: 4.375vw;              /* 导航栏高度：56px @1280 → 84px @1920   */
-  --nav-px: 1.25vw;              /* 左右内边距：16px @1280 → 24px @1920   */
-  --nav-gap: 1.25vw;             /* 区块间距：16px @1280 → 24px @1920     */
-  --nav-link-gap: 0.78125vw;     /* 菜单项内间距：10px @1280 → 15px @1920  */
-  --nav-text: clamp(13px, 1.171875vw, 22.5px);   /* ★ 菜单字号带上下限   */
-  --nav-icon: clamp(15px, 1.40625vw, 27px);      /* ★ 图标带上下限      */
-  --nav-logo: clamp(18px, 1.875vw, 36px);        /* ★ Logo 带上下限      */
-  --nav-btn: clamp(30px, 2.5vw, 48px);           /* ★ 按钮带上下限      */
+  --nav-h: 4.375vw; /* 导航栏高度：56px @1280 → 84px @1920   */
+  --nav-px: 1.25vw; /* 左右内边距：16px @1280 → 24px @1920   */
+  --nav-gap: 1.25vw; /* 区块间距：16px @1280 → 24px @1920     */
+  --nav-link-gap: 0.78125vw; /* 菜单项内间距：10px @1280 → 15px @1920  */
+  --nav-text: clamp(13px, 1.171875vw, 22.5px); /* ★ 菜单字号带上下限   */
+  --nav-icon: clamp(15px, 1.40625vw, 27px); /* ★ 图标带上下限      */
+  --nav-logo: clamp(18px, 1.875vw, 36px); /* ★ Logo 带上下限      */
+  --nav-btn: clamp(30px, 2.5vw, 48px); /* ★ 按钮带上下限      */
 
   /* ★ 搜索栏：与视口等比缩放，clamp 保护下限 */
   --nav-search-w: clamp(210px, 21.875vw, 420px);
@@ -76,7 +76,7 @@
   font-weight: 700;
   line-height: 16px;
   text-align: center;
-  pointer-events: none;   /* ★ 不阻挡点击齿轮按钮 */
+  pointer-events: none; /* ★ 不阻挡点击齿轮按钮 */
   z-index: 10;
   box-shadow: 0 0 0 1.5px rgb(255 255 255 / 0.95);
 }
@@ -101,8 +101,8 @@
 .top-nav__search {
   width: var(--nav-search-w);
   flex-shrink: 0;
-  display: flex;                  /* ★ 正常文档流 */
-  align-items: stretch;           /* ★ 子项等高 */
+  display: flex; /* ★ 正常文档流 */
+  align-items: stretch; /* ★ 子项等高 */
   position: relative;
 }
 
@@ -111,8 +111,8 @@
   flex: 1 1 auto;
   height: var(--nav-search-h);
   font-size: var(--nav-search-text);
-  min-width: 0;                   /* ★ 允许收缩，防止 flex 子项溢出 */
-  padding-left: 32px !important;  /* ★ 固定值，只给放大镜图标留位 */
+  min-width: 0; /* ★ 允许收缩，防止 flex 子项溢出 */
+  padding-left: 32px !important; /* ★ 固定值，只给放大镜图标留位 */
   padding-right: 32px !important;
 }
 
@@ -176,7 +176,9 @@
 }
 
 /* 导航栏容器 */
-.top-nav { height: var(--nav-h); }
+.top-nav {
+  height: var(--nav-h);
+}
 .top-nav__inner {
   width: 100%;
   max-width: 100%;
@@ -185,7 +187,9 @@
   padding-left: var(--nav-px);
   padding-right: var(--nav-px);
 }
-.top-nav__menu { gap: var(--nav-link-gap); }
+.top-nav__menu {
+  gap: var(--nav-link-gap);
+}
 .top-nav__link {
   padding-left: var(--nav-link-gap);
   padding-right: var(--nav-link-gap);
@@ -217,7 +221,9 @@
 }
 
 @media (max-width: 1023px) {
-  .top-nav__text { display: none; }
+  .top-nav__text {
+    display: none;
+  }
   .top-nav__link {
     min-width: 36px;
     min-height: 36px;
@@ -225,46 +231,92 @@
   }
 }
 
-html, body {
+html,
+body {
   height: 100%;
   overflow-x: hidden;
   overscroll-behavior: none;
 }
-body { color: rgb(var(--foreground-rgb)); }
+body {
+  color: rgb(var(--foreground-rgb));
+}
 html:not(.dark) body {
   background: linear-gradient(
     180deg,
-    #e6f3fb 0%, #eaf3f7 18%, #f7f7f3 38%,
-    #e9ecef 60%, #dbe3ea 80%, #d3dde6 100%
+    #e6f3fb 0%,
+    #eaf3f7 18%,
+    #f7f7f3 38%,
+    #e9ecef 60%,
+    #dbe3ea 80%,
+    #d3dde6 100%
   );
   background-attachment: fixed;
 }
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: rgba(31, 41, 55, 0.1); }
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(31, 41, 55, 0.1);
+}
 ::-webkit-scrollbar-thumb {
   background: rgba(75, 85, 99, 0.3);
   border-radius: 4px;
 }
-::-webkit-scrollbar-thumb:hover { background: rgba(107, 114, 128, 0.5); }
-.video-card-hover { transition: transform 0.3s ease; }
-.video-card-hover:hover { transform: scale(1.05); }
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(107, 114, 128, 0.5);
+}
+.video-card-hover {
+  transition: transform 0.3s ease;
+}
+.video-card-hover:hover {
+  transform: scale(1.05);
+}
 .gradient-overlay {
-  background: linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.8) 100%);
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0.8) 100%
+  );
 }
 @media (max-width: 767px) {
-  html, body { scrollbar-width: none; }
-  html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
+  html,
+  body {
+    scrollbar-width: none;
+  }
+  html::-webkit-scrollbar,
+  body::-webkit-scrollbar {
+    display: none;
+  }
 }
-@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
 ::view-transition-old(root),
 ::view-transition-new(root) {
   animation-duration: 0.6s;
   animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   animation-fill-mode: both;
 }
-::view-transition-old(root) { animation-name: fade-out; }
-::view-transition-new(root) { animation-name: fade-in; }
+::view-transition-old(root) {
+  animation-name: fade-out;
+}
+::view-transition-new(root) {
+  animation-name: fade-in;
+}
 div[data-media-provider] video {
   height: 100%;
   object-fit: contain;
@@ -325,5 +377,23 @@ div[data-media-provider] video {
 @media (max-width: 768px) {
   .art-control-pip,
   .art-control-fullscreenWeb,
-  .art-control-volume { display: none !important; }
+  .art-control-volume {
+    display: none !important;
+  }
+}
+
+/* 播放器内置文字提示（notice）：固定到画面左下角，替代默认的顶部居中提示条 */
+.art-video-player .art-notice.art-notice {
+  inset: auto auto calc(var(--art-padding) + 4px) var(--art-padding);
+  width: auto;
+  max-width: calc(100% - var(--art-padding) * 2);
+  padding: 0;
+  justify-content: flex-start;
+  transition: bottom 0.2s ease;
+}
+
+/* 控制栏显示 / 悬停时抬高一点，避免提示被进度条和按钮遮挡 */
+.art-video-player.art-control-show .art-notice.art-notice,
+.art-video-player.art-hover .art-notice.art-notice {
+  bottom: calc(var(--art-control-height) + 12px);
 }

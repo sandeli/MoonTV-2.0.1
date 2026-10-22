@@ -123,6 +123,12 @@ const CACHE_SETTING_NAME = '视频缓存';
 /** 「弹幕源」设置项的 name */
 const DANMAKU_SETTING_NAME = '弹幕源';
 
+/** 自动加载弹幕时在播放器内置 notice 中展示的文案 */
+const DANMAKU_LOADING_NOTICE_TEXT = '正在自动加载弹幕…';
+
+/** 内置 notice 默认 2 秒自动消失，自动加载期间按此间隔续期以保持常显 */
+const DANMAKU_LOADING_NOTICE_REFRESH_MS = 1500;
+
 /**
  * 下一集预热的覆盖时长（秒）。
  *
@@ -222,6 +228,8 @@ export function usePlayEngine() {
   });
   const skipConfigRef = useRef(skipConfig);
   const restartPrefetchForSkipRef = useRef<(() => void) | null>(null);
+  /** 已提示过的缓存错误，避免同一错误在左下角反复闪现 */
+  const cacheErrorNoticeRef = useRef<string | null>(null);
   useEffect(() => {
     skipConfigRef.current = skipConfig;
     restartPrefetchForSkipRef.current?.();
@@ -1310,6 +1318,40 @@ export function usePlayEngine() {
     preferredDanmakuPlatform,
   ]);
 
+  // 自动加载弹幕的提示改用播放器内置 notice（左下角文字提示），
+  // 这样网页全屏 / 原生全屏下同样可见，也不再需要页面级浮层。
+  useEffect(() => {
+    const art = artPlayerRef.current;
+    if (!art) return;
+
+    const noticeInner = art.template?.$noticeInner as HTMLElement | undefined;
+    const isShowingLoadingNotice = () =>
+      noticeInner?.textContent === DANMAKU_LOADING_NOTICE_TEXT;
+
+    if (!isDanmakuLoading) {
+      if (isShowingLoadingNotice()) art.notice.show = '';
+      return;
+    }
+
+    const syncNotice = () => {
+      // 正在展示其它提示（音量、跳过片头等）时先让位，等它消失后再补上
+      if (!noticeInner?.textContent || isShowingLoadingNotice()) {
+        art.notice.show = DANMAKU_LOADING_NOTICE_TEXT;
+      }
+    };
+
+    syncNotice();
+    const refreshTimer = window.setInterval(
+      syncNotice,
+      DANMAKU_LOADING_NOTICE_REFRESH_MS
+    );
+
+    return () => {
+      window.clearInterval(refreshTimer);
+      if (isShowingLoadingNotice()) art.notice.show = '';
+    };
+  }, [isDanmakuLoading, playerHost]);
+
   // -----------------------------------------------------------------------------
   // 播放记录与跳过配置恢复
   // -----------------------------------------------------------------------------
@@ -2060,6 +2102,21 @@ export function usePlayEngine() {
               buildCacheTooltip(stats, probed > 0 ? probe.hitRate : null)
             );
 
+            // 缓存任务因错误终止（存储满 / 解析失败 / 源拒绝访问等）时，
+            // 设置项 tooltip 用户看不到，把原因同步到播放器左下角提示。
+            if (stats.state === 'error' && stats.message) {
+              const noticeKey = `error:${stats.message}`;
+              if (cacheErrorNoticeRef.current !== noticeKey) {
+                cacheErrorNoticeRef.current = noticeKey;
+                if (artPlayerRef.current) {
+                  artPlayerRef.current.notice.show = `视频缓存已终止：${stats.message}`;
+                }
+              }
+            } else if (stats.state !== 'error') {
+              // 新一轮任务开始后允许再次提示同样的错误
+              cacheErrorNoticeRef.current = null;
+            }
+
             // 当前集的前向视野已经铺满 → 顺手把下一集的前几分钟也预热掉，
             // 这样用户点"下一集"时首屏基本是命中缓存而不是现拉网络。
             if (stats.state === 'done') warmupNextEpisode();
@@ -2560,13 +2617,26 @@ export function usePlayEngine() {
               const enabled = !item.switch;
               saveCacheSettings({ enabled });
               if (enabled) {
+                cacheErrorNoticeRef.current = null;
                 updateCacheTooltip('未开始');
                 ensurePrefetchCurrent(artPlayerRef.current?.currentTime || 0);
               } else {
-                prefetcherRef.current.stop();
-                getNextEpisodePrefetcher().stop();
-                nextWarmupKeyRef.current = null;
-                updateCacheTooltip('已关闭');
+                try {
+                  prefetcherRef.current.stop();
+                  getNextEpisodePrefetcher().stop();
+                  nextWarmupKeyRef.current = null;
+                  updateCacheTooltip('已关闭');
+                } catch (error) {
+                  // 终止失败：回滚开关（缓存仍在跑），并把原因显示在左下角
+                  saveCacheSettings({ enabled: true });
+                  updateCacheTooltip('终止失败', true);
+                  const reason =
+                    error instanceof Error ? error.message : '未知错误';
+                  if (artPlayerRef.current) {
+                    artPlayerRef.current.notice.show = `终止视频缓存失败：${reason}`;
+                  }
+                  return true;
+                }
               }
               return enabled;
             },
