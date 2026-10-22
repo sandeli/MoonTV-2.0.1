@@ -52,15 +52,38 @@ export interface SegmentMeta {
  */
 export const UNLIMITED_HORIZON_SECONDS = 0;
 
+/** 缓存并发档位：只提供低/中/高三档，不开放任意数值 */
+export type CacheConcurrencyMode = 'low' | 'medium' | 'high';
+
+/**
+ * 档位与分片并发数的对应关系（设置界面与调度器共用同一份定义）。
+ *
+ * 取值依据（采集站 HLS 的实际分布：分片 0.5–5 MB，偶尔到 8–12 MB；
+ * 1080p 常见码率 2.5–6 Mbps，分片 4–10 s）：
+ *
+ * - 预取只需追上播放码率（1080p ≈ 0.6 MB/s），2 路就能覆盖实时预取，
+ *   所以低档取 2，给弱网/省流留一档不抢带宽的选择；
+ * - 中档 4 路是日常默认：按单分片 3 MB、单请求 ~0.6 s 计，
+ *   4 路 ≈ 20 MB/s，一部 40 分钟、2.25 GB 的 1080p 约 2 分钟补齐视野，
+ *   同时不会让播放器的 hls 请求排在大量预取后面；
+ * - 高档 8 路用于批量预热：8 路足以跑满 50–100 Mbps 的家用带宽，
+ *   再往上只是把 0.5–5 MB 的小分片堆成排队，收益递减而尾延迟变差。
+ */
+export const CACHE_CONCURRENCY_PRESETS: Record<CacheConcurrencyMode, number> = {
+  low: 2,
+  medium: 4,
+  high: 8,
+};
+
 export interface CacheSettings {
   /** 总开关 */
   enabled: boolean;
   /** 切换集数时清理缓存，保留当前集与下一集预热 */
   autoClearOnEpisodeChange: boolean;
-  /** 分片下载并发数，范围 1-32 */
+  /** 分片下载并发数，由 concurrencyMode 决定（2 / 4 / 8），只读派生值 */
   concurrency: number;
-  concurrencyMode: 'low' | 'medium' | 'high' | 'custom';
-  customConcurrency: number;
+  /** 并发档位 */
+  concurrencyMode: CacheConcurrencyMode;
   /**
    * 前向缓存目标时长（秒）。
    *
@@ -78,9 +101,8 @@ export interface CacheSettings {
 export const DEFAULT_CACHE_SETTINGS: CacheSettings = {
   enabled: false,
   autoClearOnEpisodeChange: false,
-  concurrency: 3,
+  concurrency: CACHE_CONCURRENCY_PRESETS.low,
   concurrencyMode: 'low',
-  customConcurrency: 3,
   // 默认不设时间上限：暂停后一直往后缓存，直到片尾或触发字节上限淘汰
   horizonSeconds: UNLIMITED_HORIZON_SECONDS,
   maxBytesPerEpisode: 800 * 1024 * 1024,
@@ -112,6 +134,47 @@ export function loadCacheSettings(): CacheSettings {
   }
 }
 
+/** 把任意并发数收敛到最接近的预设档位 */
+export function closestConcurrencyMode(value: number): CacheConcurrencyMode {
+  const modes: CacheConcurrencyMode[] = ['low', 'medium', 'high'];
+  let best: CacheConcurrencyMode = modes[0];
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const mode of modes) {
+    const distance = Math.abs(CACHE_CONCURRENCY_PRESETS[mode] - value);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = mode;
+    }
+  }
+  return best;
+}
+
+/**
+ * 解析并发档位。
+ *
+ * 旧版本支持"自定义并发"，存量配置里可能是 `concurrencyMode: 'custom'`
+ * 加一个 `customConcurrency`（也可能是更早的只存 `concurrency`）。
+ * 现在只保留三档预设，这些历史值一律按最接近的档位收敛，
+ * 保证升级后不会因为字段缺失回落到 1 路。
+ */
+function normalizeConcurrencyMode(
+  raw: Record<string, unknown>
+): CacheConcurrencyMode {
+  const mode = raw.concurrencyMode;
+  if (mode === 'low' || mode === 'medium' || mode === 'high') return mode;
+  if (mode !== undefined && mode !== 'custom') {
+    return DEFAULT_CACHE_SETTINGS.concurrencyMode;
+  }
+  const legacy = clampNumber(
+    raw.customConcurrency ?? raw.concurrency,
+    1,
+    Number.MAX_SAFE_INTEGER
+  );
+  return legacy === undefined
+    ? DEFAULT_CACHE_SETTINGS.concurrencyMode
+    : closestConcurrencyMode(legacy);
+}
+
 /** 对可能不可信的配置做字段级校验，避免脏数据导致配额失控 */
 export function normalizeCacheSettings(input: unknown): CacheSettings {
   if (!input || typeof input !== 'object') return DEFAULT_CACHE_SETTINGS;
@@ -125,29 +188,9 @@ export function normalizeCacheSettings(input: unknown): CacheSettings {
   }
   if (typeof raw.useProxy === 'boolean') settings.useProxy = raw.useProxy;
 
-  const concurrency = clampNumber(raw.concurrency, 1, 32);
-  if (concurrency !== undefined) settings.concurrency = Math.round(concurrency);
-  const customConcurrency = clampNumber(raw.customConcurrency, 1, 32);
-  settings.customConcurrency =
-    customConcurrency === undefined
-      ? settings.concurrency
-      : Math.round(customConcurrency);
-  // 兼容旧配置：非预设并发数量归入自定义模式。
-  const mode = raw.concurrencyMode;
-  settings.concurrencyMode =
-    mode === 'low' || mode === 'medium' || mode === 'high' || mode === 'custom'
-      ? mode
-      : settings.concurrency === 3
-      ? 'low'
-      : settings.concurrency === 6
-      ? 'medium'
-      : settings.concurrency === 9
-      ? 'high'
-      : 'custom';
-  settings.concurrency =
-    settings.concurrencyMode === 'custom'
-      ? settings.customConcurrency
-      : { low: 3, medium: 6, high: 9 }[settings.concurrencyMode];
+  // 并发只能来自三档预设，写入端的 concurrency 字段被忽略并重新派生。
+  settings.concurrencyMode = normalizeConcurrencyMode(raw);
+  settings.concurrency = CACHE_CONCURRENCY_PRESETS[settings.concurrencyMode];
 
   const horizon = clampNumber(raw.horizonSeconds, 0, 7200);
   if (horizon !== undefined) {

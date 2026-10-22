@@ -40,7 +40,10 @@ import {
 } from '@/lib/hls-quality';
 import { describeHlsError, PlaybackRecovery } from '@/lib/playback-recovery';
 import { getDefaultPlaybackSaveInterval } from '@/lib/playback-settings';
-import { shouldThrottlePrefetch } from '@/lib/prefetch-scheduler';
+import {
+  getWarmupConcurrency,
+  shouldThrottlePrefetch,
+} from '@/lib/prefetch-scheduler';
 import { matchesFullSearchTitle } from '@/lib/search-title';
 import { SearchResult } from '@/lib/types';
 import {
@@ -49,6 +52,7 @@ import {
   processImageUrl,
 } from '@/lib/utils';
 import {
+  CACHE_CONCURRENCY_PRESETS,
   clearVideoCache,
   getSegmentProbe,
   loadCacheSettings,
@@ -154,9 +158,11 @@ function buildCacheTooltip(
 
   const coverPart =
     stats.coverTo > 0 ? ` · 已覆盖 ${formatTime(stats.coverTo)}` : '';
+  // 个别分片坏掉不会终止整轮，但要让用户知道有缺口，而不是以为缓存完整。
+  const failedPart = stats.failed > 0 ? ` · ${stats.failed} 段失败` : '';
   const hitPart =
     hitRate === null ? '' : ` · 命中 ${Math.round(hitRate * 100)}%`;
-  return `${stats.cached}/${stats.total} 段${coverPart}${hitPart}`;
+  return `${stats.cached}/${stats.total} 段${coverPart}${failedPart}${hitPart}`;
 }
 
 /**
@@ -2021,10 +2027,14 @@ export function usePlayEngine() {
        * 走独立的预取器实例，因此**不会**打断当前集的队列。
        * 只在当前集队列跑到 `done` 时触发一次（由 `nextWarmupKeyRef` 去重），
        * 并且随集数/画质变化自动失效。
+       *
+       * 并发取用户档位的一半（`getWarmupConcurrency`）：预热是二等消费者，
+       * 播放器 seek / 换档仍要抢带宽；共享下载额度保证两轮之和仍受档位封顶。
        */
       const warmupNextEpisode = () => {
         if (cacheClearPromiseRef.current) return;
-        if (!loadCacheSettings().enabled) return;
+        const settings = loadCacheSettings();
+        if (!settings.enabled) return;
 
         const data = detailRef.current;
         const episodes = data?.episodes;
@@ -2064,8 +2074,8 @@ export function usePlayEngine() {
           episodeKey: `${currentSourceRef.current}:${currentIdRef.current}:${nextIndex}`,
           preferredHeight: preferred,
           horizonSeconds: NEXT_EPISODE_HORIZON_SECONDS,
-          useProxy: loadCacheSettings().useProxy,
-          concurrency: 1,
+          useProxy: settings.useProxy,
+          concurrency: getWarmupConcurrency(settings.concurrency),
         });
         syncCacheBandwidth(true);
       };
@@ -2089,7 +2099,6 @@ export function usePlayEngine() {
         low: '低档',
         medium: '中档',
         high: '高档',
-        custom: '自定义',
       };
       const restartCacheQueue = () => {
         prefetcherRef.current.stop();
@@ -2521,18 +2530,11 @@ export function usePlayEngine() {
             tooltip: `${
               cacheModeLabels[loadCacheSettings().concurrencyMode]
             } · ${loadCacheSettings().concurrency} 个`,
-            selector: (['low', 'medium', 'high', 'custom'] as const).map(
-              (mode) => ({
-                html:
-                  mode === 'custom'
-                    ? '自定义'
-                    : `${cacheModeLabels[mode]}（${
-                        { low: 3, medium: 6, high: 9 }[mode]
-                      } 个）`,
-                value: mode,
-                default: mode === loadCacheSettings().concurrencyMode,
-              })
-            ),
+            selector: (['low', 'medium', 'high'] as const).map((mode) => ({
+              html: `${cacheModeLabels[mode]}（${CACHE_CONCURRENCY_PRESETS[mode]} 个）`,
+              value: mode,
+              default: mode === loadCacheSettings().concurrencyMode,
+            })),
             onSelect: function (item: any) {
               const settings = saveCacheSettings({
                 concurrencyMode: item.value,
@@ -2541,39 +2543,6 @@ export function usePlayEngine() {
               return `${cacheModeLabels[settings.concurrencyMode]} · ${
                 settings.concurrency
               } 个`;
-            },
-          },
-          {
-            name: '自定义缓存并发',
-            html: '自定义并发',
-            tooltip: `${loadCacheSettings().customConcurrency} 个`,
-            range: [loadCacheSettings().customConcurrency, 1, 32, 1],
-            onChange: function (item: any) {
-              return `${item.range[0]} 个`;
-            },
-            onRange: function (item: any) {
-              const settings = saveCacheSettings({
-                concurrencyMode: 'custom',
-                customConcurrency: Number(item.range[0]),
-              });
-              updateSettingPreservingPanel(artPlayerRef.current, {
-                name: '缓存模式',
-                tooltip: `自定义 · ${settings.concurrency} 个`,
-                selector: (['low', 'medium', 'high', 'custom'] as const).map(
-                  (mode) => ({
-                    html:
-                      mode === 'custom'
-                        ? '自定义'
-                        : `${cacheModeLabels[mode]}（${
-                            { low: 3, medium: 6, high: 9 }[mode]
-                          } 个）`,
-                    value: mode,
-                    default: mode === 'custom',
-                  })
-                ),
-              });
-              restartCacheQueue();
-              return `${settings.concurrency} 个`;
             },
           },
           {

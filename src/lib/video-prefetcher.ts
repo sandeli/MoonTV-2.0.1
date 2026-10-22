@@ -12,10 +12,11 @@
 
 import { parseM3U8 } from './m3u8-downloader';
 import {
-  getPrefetchLimit,
+  clampPrefetchConcurrency,
   observePrefetchSegment,
   prefetchDownloadLimiter,
   prefetchWriteLimiter,
+  registerPrefetchConcurrency,
 } from './prefetch-scheduler';
 import { byteRangeHeader, readByteRangeResponse } from './video-byte-range';
 import {
@@ -49,6 +50,8 @@ export interface PrefetchStats {
   bytes: number;
   /** 实际已缓存片段的总时长（秒），不包含缓存间隙 */
   coverTo: number;
+  /** 重试与代理兜底都失败、已跳过的分片数（不影响其余分片继续缓存） */
+  failed: number;
   message?: string;
 }
 
@@ -69,7 +72,12 @@ export interface PrefetchOptions {
   horizonSeconds?: number;
   /** 回看保护时长（秒），默认 30 */
   lookBehindSeconds?: number;
-  /** 覆盖缓存模式的并发数（上限 32）：并发太高会抢播放的带宽 */
+  /**
+   * 覆盖缓存模式的并发数。
+   *
+   * 只有低/中/高（2/4/8）三档由用户选择；预热这类低优先级队列可以传更小的
+   * 值，但不会超过最高档——并发太高会抢播放的带宽。
+   */
   concurrency?: number;
   /** 覆盖 settings.useProxy：直连失败时是否允许代理兜底 */
   useProxy?: boolean;
@@ -90,10 +98,29 @@ const IDLE_STATS: PrefetchStats = {
   total: 0,
   bytes: 0,
   coverTo: 0,
+  failed: 0,
 };
 
 /** 时长信息缺失且设置了时间上限时，最多预取多少个片段；无限模式不受此限 */
 const FALLBACK_MAX_SEGMENTS = 200;
+
+/**
+ * 连续多少个分片失败视为"本阶段失败密集"。
+ *
+ * 采集站常见个别分片坏掉（时间戳漂移、单片 404、鉴权瞬时失效），
+ * 只要大多数分片成功就不该让整集缓存作废，所以先跳过继续跑；
+ * 一旦密集到说明当前下载路由不可用，行为分两种：
+ *
+ * - 直连阶段 → 整体切到代理阶段，并把已失败的分片用代理补下；
+ * - 代理阶段（或不允许代理）→ 终止整轮。
+ */
+const MAX_CONSECUTIVE_SEGMENT_FAILURES = 3;
+
+/** 失败占比超过该值且样本足够时，同样视为"本阶段失败密集" */
+const SEGMENT_FAILURE_RATIO_LIMIT = 0.5;
+
+/** 判断失败占比前至少处理过的分片数，避免刚开始的偶发失败就误杀 */
+const MIN_SEGMENT_FAILURE_SAMPLE = 6;
 
 /** 进度回调最小间隔，避免高频写 React state */
 const EMIT_INTERVAL_MS = 250;
@@ -417,6 +444,7 @@ export class VideoPrefetcher {
       previous.total === this.stats.total &&
       previous.bytes === this.stats.bytes &&
       previous.coverTo === this.stats.coverTo &&
+      previous.failed === this.stats.failed &&
       previous.message === this.stats.message
     ) {
       return;
@@ -437,12 +465,11 @@ export class VideoPrefetcher {
     await Promise.allSettled(Array.from(this.pendingRuns));
     if (signal.aborted) return;
     const useProxy = options.useProxy ?? settings.useProxy;
-    const concurrency = Math.max(
-      1,
-      Math.min(
-        getPrefetchLimit(4 * 1024 * 1024),
-        Math.round(options.concurrency ?? settings.concurrency)
-      )
+    // 用户在缓存设置里选的档位并发（2/4/8）就是实际并发：以前这里叠了一层
+    // `getPrefetchLimit(4MiB)` + 固定 6 路封顶，档位形同虚设。
+    // 内存兜底改由共享下载额度（prefetchDownloadLimiter）负责。
+    const concurrency = clampPrefetchConcurrency(
+      options.concurrency ?? settings.concurrency
     );
     const lookBehind = Math.max(0, options.lookBehindSeconds ?? 30);
 
@@ -557,6 +584,26 @@ export class VideoPrefetcher {
     let cached = 0;
     let bytes = 0;
     let coverTo = 0;
+    /**
+     * 下载路由阶段。
+     *
+     * - `direct`：先直连，单片失败后再用代理兜一次；
+     * - `proxy`：直连失败密集后整体切过来，只走代理——不再为每个分片
+     *   白试 4 次已知不可用的直连，同时给代理一次独立评估的机会。
+     */
+    let routeStage: 'direct' | 'proxy' = 'direct';
+    /** 本阶段连续失败的分片数，任一分片成功即清零 */
+    let consecutiveFailures = 0;
+    /** 本阶段成功 / 失败的分片数（切阶段时归零，避免新旧阶段的失败互相污染） */
+    let stageSucceeded = 0;
+    let stageFailed = 0;
+    /**
+     * 两条路由都失败、尚未补下的分片。
+     *
+     * 切到代理阶段时会把它们重新排进队列补下；补下成功后移除。
+     * 因此它同时就是 `stats.failed`（真实缺口，而不是"曾经失败过"）。
+     */
+    const failedIndices = new Set<number>();
     const updateSegmentStats = (index: number, size: number | undefined) => {
       const previous = cachedSizes[index];
       if (previous === size) return;
@@ -575,7 +622,13 @@ export class VideoPrefetcher {
     const emitSegmentStats = (force = false) =>
       this.emit(
         options,
-        { cached, bytes, coverTo, total: task.tsUrlList.length },
+        {
+          cached,
+          bytes,
+          coverTo,
+          failed: failedIndices.size,
+          total: task.tsUrlList.length,
+        },
         force
       );
     let lastStatsAt = 0;
@@ -656,6 +709,29 @@ export class VideoPrefetcher {
       this.accessDenied = true;
       requests.abort();
       this.setThrottled(false);
+    };
+
+    /**
+     * 记录一个"本阶段所有路由都失败"的分片，并判断下一步动作。
+     *
+     * - `continue`：个别坏片，跳过继续；
+     * - `switch`：直连阶段失败密集 → 整体切到代理（並补下已失败的分片）；
+     * - `abort`：当前阶段（代理阶段，或不允许代理）失败密集 → 源不可用。
+     */
+    const noteStageFailure = (
+      segmentIndex: number
+    ): 'continue' | 'switch' | 'abort' => {
+      stageFailed += 1;
+      consecutiveFailures += 1;
+      failedIndices.add(segmentIndex);
+      emitSegmentStats();
+      const handled = stageFailed + stageSucceeded;
+      const dense =
+        consecutiveFailures >= MAX_CONSECUTIVE_SEGMENT_FAILURES ||
+        (handled >= MIN_SEGMENT_FAILURE_SAMPLE &&
+          stageFailed / handled > SEGMENT_FAILURE_RATIO_LIMIT);
+      if (!dense) return 'continue';
+      return routeStage === 'direct' && useProxy ? 'switch' : 'abort';
     };
 
     const worker = async (): Promise<void> => {
@@ -744,39 +820,73 @@ export class VideoPrefetcher {
             task.tsUrlList[segmentIndex],
             true
           );
-          const proxyPreferred = useProxy && proxyOrigins.has(origin);
+          /**
+           * 按当前阶段选路：
+           *  - 代理阶段：只走代理，给代理一次独立的成败评估；
+           *  - 该源此前代理成功过：代理优先，失败后回直连兜一次；
+           *  - 其它：直连优先，失败后用代理兜一次（并记住这个源）。
+           */
+          const loadWithFallback = async () => {
+            if (routeStage === 'proxy') {
+              const viaProxy = await loadSegment(proxyUrl);
+              proxyOrigins.add(origin);
+              return viaProxy;
+            }
+            if (useProxy && proxyOrigins.has(origin)) {
+              try {
+                return await loadSegment(proxyUrl);
+              } catch (error) {
+                if (requests.signal.aborted) throw error;
+                // 代理这次不行了：忘掉标记，回直连兜一次，避免整源被拖死
+                proxyOrigins.delete(origin);
+                return loadSegment(directUrl);
+              }
+            }
+            try {
+              return await loadSegment(directUrl);
+            } catch (error) {
+              if (requests.signal.aborted || !useProxy) throw error;
+            }
+            const viaProxy = await loadSegment(proxyUrl);
+            proxyOrigins.add(origin);
+            return viaProxy;
+          };
+
           let segment: Awaited<ReturnType<typeof loadSegment>>;
           try {
-            segment = await loadSegment(proxyPreferred ? proxyUrl : directUrl);
+            segment = await loadWithFallback();
           } catch (error) {
             if (requests.signal.aborted) return;
             const reason =
               error instanceof Error ? error.message : '网络请求失败';
-            if (proxyPreferred || !useProxy) {
+            const decision = noteStageFailure(segmentIndex);
+            if (decision === 'switch') {
+              // 直连失败密集：整体切到代理阶段，并把已失败的分片重新排队补下。
+              routeStage = 'proxy';
+              consecutiveFailures = 0;
+              stageSucceeded = 0;
+              stageFailed = 0;
+              queue.push(...Array.from(failedIndices));
+              emitSegmentStats();
+              continue;
+            }
+            if (decision === 'abort') {
               denyAccess(
                 `${
-                  proxyPreferred ? '代理' : '直连'
-                }缓存下载失败（${reason}），已重试 3 次，请更换播放源`
+                  routeStage === 'proxy' ? '代理' : '直连'
+                }缓存连续失败（最近一次：${reason}），${
+                  failedIndices.size
+                } 个分片未缓存，请更换播放源`
               );
               return;
             }
-            // Prefer the browser's network; remember a successful proxy fallback
-            // for this origin, without changing cache keys or byte-range headers.
-            try {
-              segment = await loadSegment(proxyUrl);
-              proxyOrigins.add(origin);
-            } catch (proxyError) {
-              if (requests.signal.aborted) return;
-              const proxyReason =
-                proxyError instanceof Error
-                  ? proxyError.message
-                  : '网络请求失败';
-              denyAccess(
-                `直连失败（${reason}），代理也失败（${proxyReason}），均已重试 3 次，请更换播放源`
-              );
-              return;
-            }
+            continue;
           }
+
+          // 拿到响应即视为该分片所属源可用，用于失败占比判断。
+          stageSucceeded += 1;
+          consecutiveFailures = 0;
+          failedIndices.delete(segmentIndex);
 
           const { response, buffer } = segment;
           const costMs = Math.max(1, Date.now() - startedAt);
@@ -845,12 +955,15 @@ export class VideoPrefetcher {
       }
     };
 
+    // 把本轮并发登记进共享下载额度，否则调度器的默认额度会再次把高并发压回去。
+    const releaseConcurrency = registerPrefetchConcurrency(concurrency);
     try {
       await Promise.all(
         Array.from({ length: Math.min(concurrency, queue.length) }, worker)
       );
     } finally {
       signal.removeEventListener('abort', cancelRequests);
+      releaseConcurrency();
     }
     if (signal.aborted) return;
 
@@ -877,7 +990,13 @@ export class VideoPrefetcher {
     }
     this.emit(
       options,
-      { state: 'done', message: `已缓存 ${this.stats.cached} 个片段` },
+      {
+        state: 'done',
+        message:
+          failedIndices.size > 0
+            ? `已缓存 ${this.stats.cached} 个片段，${failedIndices.size} 个分片下载失败已跳过`
+            : `已缓存 ${this.stats.cached} 个片段`,
+      },
       true
     );
   }
