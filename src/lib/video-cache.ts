@@ -497,21 +497,28 @@ export async function enforceQuota(
   if (victims.size === 0) return 0;
 
   let removed = 0;
-  await Promise.all(
-    Array.from(victims).map(async (key) => {
-      try {
-        if (await cache.delete(key)) removed += 1;
-      } catch {
-        // ignore
-      }
-      try {
-        await metaStore.del(key);
-      } catch {
-        // ignore
-      }
-      lastTouchAt.delete(key);
-    })
-  );
+  const victimKeys = Array.from(victims);
+  // Bound storage work instead of opening a transaction for every victim at once.
+  for (let offset = 0; offset < victimKeys.length; offset += 8) {
+    await Promise.all(
+      victimKeys.slice(offset, offset + 8).map(async (key) => {
+        try {
+          if (await cache.delete(key)) removed += 1;
+        } catch {
+          // ignore
+        }
+        try {
+          await metaStore.del(key);
+        } catch {
+          // ignore
+        }
+        lastTouchAt.delete(key);
+      })
+    );
+    if (offset + 8 < victimKeys.length) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+  }
 
   return removed;
 }
@@ -644,10 +651,24 @@ export async function getCachedSegmentRecords(): Promise<SegmentMeta[]> {
     metaStore.all(),
     cache.keys(),
   ]);
-  const keys = new Set(requests.map((request) => request.url));
-  return records.filter((record) =>
-    getCacheKeyVariants(record.key).some((key) => keys.has(key))
-  );
+  const keys = new Set<string>();
+  for (let i = 0; i < requests.length; i += 1) {
+    keys.add(requests[i].url);
+    if (i > 0 && i % 256 === 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  const cached: SegmentMeta[] = [];
+  for (let i = 0; i < records.length; i += 1) {
+    const record = records[i];
+    if (getCacheKeyVariants(record.key).some((key) => keys.has(key))) {
+      cached.push(record);
+    }
+    if (i > 0 && i % 256 === 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  return cached;
 }
 
 /** 按剧集聚合已缓存内容的统计（缓存管理面板用），按最近访问倒序 */

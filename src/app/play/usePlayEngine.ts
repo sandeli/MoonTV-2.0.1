@@ -40,6 +40,7 @@ import {
 } from '@/lib/hls-quality';
 import { describeHlsError, PlaybackRecovery } from '@/lib/playback-recovery';
 import { getDefaultPlaybackSaveInterval } from '@/lib/playback-settings';
+import { shouldThrottlePrefetch } from '@/lib/prefetch-scheduler';
 import { matchesFullSearchTitle } from '@/lib/search-title';
 import { SearchResult } from '@/lib/types';
 import {
@@ -317,8 +318,7 @@ export function usePlayEngine() {
         selectedDanmakuAnime.episodes[selectedDanmakuEpisode - 1];
       setSelectedState(false);
     } else if (autoDanmakuEnabled) {
-
-    /** ② 自动匹配模式：直接使用第 0 集 */
+      /** ② 自动匹配模式：直接使用第 0 集 */
       matchedEpisode = selectedDanmakuAnime.episodes[0];
     }
 
@@ -968,10 +968,7 @@ export function usePlayEngine() {
                 if (data.pageResults) {
                   const filteredResults: SearchResult[] =
                     data.pageResults.filter((r: SearchResult) => {
-                      const titleMatch = matchesFullSearchTitle(
-                        r.title,
-                        query
-                      );
+                      const titleMatch = matchesFullSearchTitle(r.title, query);
                       const yearMatch = targetYear
                         ? r.year.toLowerCase() === targetYear.toLowerCase()
                         : true;
@@ -1925,13 +1922,35 @@ export function usePlayEngine() {
        * 内部会无条件 `render()` 把设置面板弹回根面板，导致用户刚点进
        * 「画质」子面板就被踢出来，需要连点很多次。详见 `artplayer-setting.ts`。
        */
+      let lastCacheTooltip = '';
       const updateCacheTooltip = (text: string, switchState?: boolean) => {
         const art = artPlayerRef.current;
         if (!art) return;
-        setSettingTooltip(art, CACHE_SETTING_NAME, text);
+        if (text !== lastCacheTooltip) {
+          setSettingTooltip(art, CACHE_SETTING_NAME, text);
+          lastCacheTooltip = text;
+        }
         if (switchState !== undefined) {
           setSettingSwitch(art, CACHE_SETTING_NAME, switchState);
         }
+      };
+
+      let cacheBandwidthThrottled = false;
+      let lastBufferCheckAt = 0;
+      const setCacheBandwidthThrottled = (value: boolean) => {
+        cacheBandwidthThrottled = value;
+        prefetcherRef.current.setThrottled(value);
+        getNextEpisodePrefetcher().setThrottled(value);
+      };
+      const syncCacheBandwidth = (force = false) => {
+        const video = artPlayerRef.current?.video;
+        if (!video) return;
+        const now = Date.now();
+        if (!force && now - lastBufferCheckAt < 1_000) return;
+        lastBufferCheckAt = now;
+        setCacheBandwidthThrottled(
+          shouldThrottlePrefetch(video, cacheBandwidthThrottled)
+        );
       };
 
       /**
@@ -1993,6 +2012,7 @@ export function usePlayEngine() {
             if (stats.state === 'done') warmupNextEpisode();
           },
         });
+        syncCacheBandwidth(true);
       };
 
       /**
@@ -2045,7 +2065,9 @@ export function usePlayEngine() {
           preferredHeight: preferred,
           horizonSeconds: NEXT_EPISODE_HORIZON_SECONDS,
           useProxy: loadCacheSettings().useProxy,
+          concurrency: 1,
         });
+        syncCacheBandwidth(true);
       };
 
       /**
@@ -2649,6 +2671,7 @@ export function usePlayEngine() {
       // 监听播放状态变化，控制 Wake Lock
       artPlayerRef.current.on('play', () => {
         requestWakeLock();
+        syncCacheBandwidth(true);
       });
 
       artPlayerRef.current.on('pause', () => {
@@ -2662,7 +2685,7 @@ export function usePlayEngine() {
         //    缓存铺得越远；字节上限与 LRU 淘汰才是这条路的兜底。
         //    走 ensurePrefetchCurrent 而不是闭包里的 videoUrl——播放器跨集复用，
         //    闭包里的地址可能是上一集的。
-        prefetcherRef.current.setThrottled(false);
+        setCacheBandwidthThrottled(false);
         ensurePrefetchCurrent(
           artPlayerRef.current.currentTime || 0,
           UNLIMITED_HORIZON_SECONDS
@@ -2675,6 +2698,7 @@ export function usePlayEngine() {
       // 跳转开始即中止旧请求，保留统计和已写入缓存；落点确定后重新排队。
       artPlayerRef.current.on('video:seeking', () => {
         prefetcherRef.current.stop(true);
+        setCacheBandwidthThrottled(true);
       });
       artPlayerRef.current.on('video:seeked', () => {
         prefetcherRef.current.stop(true);
@@ -2684,7 +2708,7 @@ export function usePlayEngine() {
       // 播放卡顿时让出带宽，恢复后继续预取。
       // 注意：这是"临时让路"，不是"视频暂停就停缓存"。
       artPlayerRef.current.on('video:waiting', () => {
-        prefetcherRef.current.setThrottled(true);
+        setCacheBandwidthThrottled(!artPlayerRef.current?.video?.paused);
 
         // —— 弱网自动降档 ——
         // seek/换源也会触发 waiting，因此 5 秒内的重复事件只记一次；
@@ -2732,8 +2756,9 @@ export function usePlayEngine() {
         }
       });
       artPlayerRef.current.on('video:playing', () => {
-        prefetcherRef.current.setThrottled(false);
+        syncCacheBandwidth(true);
       });
+      artPlayerRef.current.on('video:progress', () => syncCacheBandwidth());
 
       // 如果播放器初始化时已经在播放状态，则请求 Wake Lock
       if (artPlayerRef.current && !artPlayerRef.current.paused) {
@@ -2790,6 +2815,7 @@ export function usePlayEngine() {
       // （两个逻辑合并到同一个监听器，避免重复注册 timeupdate）
       artPlayerRef.current.on('video:timeupdate', () => {
         const now = Date.now();
+        syncCacheBandwidth();
 
         // —— 播放进度自动保存 ——
         // 间隔优先读取站点配置（RUNTIME_CONFIG.PLAYBACK_SAVE_INTERVAL，单位秒），

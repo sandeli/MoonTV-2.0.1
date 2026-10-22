@@ -11,6 +11,12 @@
  */
 
 import { parseM3U8 } from './m3u8-downloader';
+import {
+  getPrefetchLimit,
+  observePrefetchSegment,
+  prefetchDownloadLimiter,
+  prefetchWriteLimiter,
+} from './prefetch-scheduler';
 import { byteRangeHeader, readByteRangeResponse } from './video-byte-range';
 import {
   type CacheSettings,
@@ -91,10 +97,46 @@ const FALLBACK_MAX_SEGMENTS = 200;
 
 /** 进度回调最小间隔，避免高频写 React state */
 const EMIT_INTERVAL_MS = 250;
-const STATS_REFRESH_INTERVAL_MS = 2_000;
+const STATS_REFRESH_INTERVAL_MS = 15_000;
 
 /** 淘汰检查间隔 */
 const EVICT_INTERVAL_MS = 15_000;
+
+const SEGMENT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000] as const;
+
+function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
+async function retrySegmentDownload<T>(
+  download: () => Promise<T>,
+  signal: AbortSignal
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    try {
+      return await download();
+    } catch (error) {
+      if (signal.aborted || attempt >= SEGMENT_RETRY_DELAYS_MS.length) {
+        throw error;
+      }
+      // 重试等待与分片请求使用同一信号，切集时不会留下延迟下载。
+      await waitForRetry(SEGMENT_RETRY_DELAYS_MS[attempt], signal);
+    }
+  }
+}
 
 /**
  * 把 `horizonSeconds` 换算成"目标缓存到的时间点"。
@@ -172,8 +214,10 @@ export class VideoPrefetcher {
   private reachedEnd = false;
   private accessDenied = false;
   private throttled = false;
+  private activeRequests = new Set<AbortController>();
   private resumeWaiters: Array<() => void> = [];
   private stats: PrefetchStats = { ...IDLE_STATS };
+  private lastEmittedStats: PrefetchStats | null = null;
   private lastEmitAt = 0;
 
   /**
@@ -326,7 +370,11 @@ export class VideoPrefetcher {
    * 这不是"暂停视频就停缓存"。
    */
   setThrottled(value: boolean): void {
+    if (value === this.throttled) return;
     this.throttled = value;
+    if (value) {
+      this.activeRequests.forEach((request) => request.abort());
+    }
     if (!value) {
       const waiters = this.resumeWaiters;
       this.resumeWaiters = [];
@@ -341,7 +389,16 @@ export class VideoPrefetcher {
   private waitWhileThrottled(signal: AbortSignal): Promise<void> {
     if (!this.throttled || signal.aborted) return Promise.resolve();
     return new Promise<void>((resolve) => {
-      this.resumeWaiters.push(resolve);
+      const onReady = () => {
+        signal.removeEventListener('abort', onReady);
+        this.resumeWaiters = this.resumeWaiters.filter(
+          (waiter) => waiter !== onReady
+        );
+        resolve();
+      };
+      this.resumeWaiters.push(onReady);
+      signal.addEventListener('abort', onReady, { once: true });
+      if (signal.aborted) onReady();
     });
   }
 
@@ -351,9 +408,23 @@ export class VideoPrefetcher {
     force = false
   ): void {
     this.stats = { ...this.stats, ...patch };
+    const previous = this.lastEmittedStats;
+    if (
+      !force &&
+      previous &&
+      previous.state === this.stats.state &&
+      previous.cached === this.stats.cached &&
+      previous.total === this.stats.total &&
+      previous.bytes === this.stats.bytes &&
+      previous.coverTo === this.stats.coverTo &&
+      previous.message === this.stats.message
+    ) {
+      return;
+    }
     const now = Date.now();
     if (!force && now - this.lastEmitAt < EMIT_INTERVAL_MS) return;
     this.lastEmitAt = now;
+    this.lastEmittedStats = this.stats;
     options.onProgress?.(this.stats);
   }
 
@@ -368,7 +439,10 @@ export class VideoPrefetcher {
     const useProxy = options.useProxy ?? settings.useProxy;
     const concurrency = Math.max(
       1,
-      Math.min(32, Math.round(options.concurrency ?? settings.concurrency))
+      Math.min(
+        getPrefetchLimit(4 * 1024 * 1024),
+        Math.round(options.concurrency ?? settings.concurrency)
+      )
     );
     const lookBehind = Math.max(0, options.lookBehindSeconds ?? 30);
 
@@ -476,6 +550,34 @@ export class VideoPrefetcher {
     const segmentKeys = task.tsUrlList.map((url, index) =>
       buildSegmentCacheKey(url, useProxy, task.segmentByteRanges?.[index])
     );
+    const keyVariants = segmentKeys.map(getCacheKeyVariants);
+    const relevantKeys = new Set(keyVariants.flat());
+    const cachedSizes: Array<number | undefined> = Array(segmentKeys.length);
+    const versions = Array(segmentKeys.length).fill(0);
+    let cached = 0;
+    let bytes = 0;
+    let coverTo = 0;
+    const updateSegmentStats = (index: number, size: number | undefined) => {
+      const previous = cachedSizes[index];
+      if (previous === size) return;
+      if (previous !== undefined) {
+        cached -= 1;
+        bytes -= previous;
+        coverTo -= task.segmentDurations[index] || 0;
+      }
+      cachedSizes[index] = size;
+      if (size !== undefined) {
+        cached += 1;
+        bytes += size;
+        coverTo += task.segmentDurations[index] || 0;
+      }
+    };
+    const emitSegmentStats = (force = false) =>
+      this.emit(
+        options,
+        { cached, bytes, coverTo, total: task.tsUrlList.length },
+        force
+      );
     let lastStatsAt = 0;
     let statsRefresh: Promise<void> | null = null;
     const refreshStats = async (force = false): Promise<void> => {
@@ -490,24 +592,30 @@ export class VideoPrefetcher {
         return;
       lastStatsAt = Date.now();
       statsRefresh = (async () => {
+        const snapshotVersions = versions.slice();
         const records = await getCachedSegmentRecords();
         if (signal.aborted) return;
-        const byKey = new Map(
-          records.flatMap((record) =>
-            getCacheKeyVariants(record.key).map((key) => [key, record] as const)
-          )
-        );
-        let cached = 0;
-        let bytes = 0;
-        let coverTo = 0;
+        const byKey = new Map<string, (typeof records)[number]>();
+        for (let i = 0; i < records.length; i += 1) {
+          for (const key of getCacheKeyVariants(records[i].key)) {
+            if (relevantKeys.has(key)) byKey.set(key, records[i]);
+          }
+          if (i > 0 && i % 256 === 0) {
+            await waitForRetry(0, signal);
+          }
+        }
         for (let i = 0; i < segmentKeys.length; i += 1) {
-          const record = getCacheKeyVariants(segmentKeys[i])
+          const record = keyVariants[i]
             .map((key) => byKey.get(key))
             .find(Boolean);
+          // Do not overwrite a segment committed while the snapshot was loading.
+          if (versions[i] === snapshotVersions[i]) {
+            updateSegmentStats(i, record?.bytes);
+          }
+          if (i > 0 && i % 256 === 0) {
+            await waitForRetry(0, signal);
+          }
           if (!record) continue;
-          cached += 1;
-          bytes += record.bytes;
-          coverTo += task.segmentDurations[i] || 0;
           // 用当前播放列表补齐旧缓存的时间信息，无需重新下载。
           const startTime = i === 0 ? 0 : cumulative[i - 1];
           const endTime = cumulative[i];
@@ -519,16 +627,7 @@ export class VideoPrefetcher {
             if (signal.aborted) return;
           }
         }
-        this.emit(
-          options,
-          {
-            cached,
-            bytes,
-            coverTo,
-            total: task.tsUrlList.length,
-          },
-          force
-        );
+        emitSegmentStats(force);
       })();
       try {
         await statsRefresh;
@@ -561,7 +660,7 @@ export class VideoPrefetcher {
 
     const worker = async (): Promise<void> => {
       while (!signal.aborted && !storageFull && !accessError) {
-        await this.waitWhileThrottled(signal);
+        await this.waitWhileThrottled(requests.signal);
         if (signal.aborted || accessError) return;
 
         const slot = cursor;
@@ -581,6 +680,7 @@ export class VideoPrefetcher {
           range
         );
 
+        let releaseDownload: (() => void) | undefined;
         try {
           const alreadyCached = await hasCachedSegment(cacheKey);
           if (signal.aborted || accessError) return;
@@ -589,22 +689,57 @@ export class VideoPrefetcher {
             continue;
           }
 
+          releaseDownload = await prefetchDownloadLimiter.acquire(
+            requests.signal
+          );
           const startedAt = Date.now();
-          const requestOptions: RequestInit = {
-            signal: requests.signal,
-            credentials: 'omit',
-            cache: 'no-store',
-            headers: range ? { Range: byteRangeHeader(range) } : undefined,
-          };
-          const loadSegment = async (url: string) => {
-            const response = await fetch(url, requestOptions);
-            if (!response.ok) {
-              await response.body?.cancel();
-              throw new Error(`HTTP ${response.status}`);
-            }
-            const buffer = await readByteRangeResponse(response, range);
-            return { response, buffer };
-          };
+          const loadSegment = (url: string) =>
+            retrySegmentDownload(async () => {
+              for (;;) {
+                await this.waitWhileThrottled(requests.signal);
+                if (requests.signal.aborted) {
+                  throw new DOMException('Aborted', 'AbortError');
+                }
+                if (this.throttled) continue;
+                const request = new AbortController();
+                const cancel = () => request.abort();
+                requests.signal.addEventListener('abort', cancel, {
+                  once: true,
+                });
+                this.activeRequests.add(request);
+                try {
+                  const response = await fetch(url, {
+                    signal: request.signal,
+                    credentials: 'omit',
+                    cache: 'no-store',
+                    headers: range
+                      ? { Range: byteRangeHeader(range) }
+                      : undefined,
+                  });
+                  if (!response.ok) {
+                    await response.body?.cancel();
+                    throw new Error(`HTTP ${response.status}`);
+                  }
+                  const expectedBytes = range
+                    ? range.end - range.start
+                    : Number(response.headers.get('Content-Length'));
+                  if (Number.isFinite(expectedBytes) && expectedBytes > 0) {
+                    observePrefetchSegment(expectedBytes);
+                  }
+                  const buffer = await readByteRangeResponse(response, range);
+                  observePrefetchSegment(buffer.byteLength);
+                  return { response, buffer };
+                } catch (error) {
+                  const interrupted =
+                    request.signal.aborted && !requests.signal.aborted;
+                  if (!interrupted) throw error;
+                } finally {
+                  this.activeRequests.delete(request);
+                  requests.signal.removeEventListener('abort', cancel);
+                }
+                // Bandwidth yielding is not a download failure or a retry attempt.
+              }
+            }, requests.signal);
           const proxyUrl = buildSegmentCacheKey(
             task.tsUrlList[segmentIndex],
             true
@@ -621,7 +756,7 @@ export class VideoPrefetcher {
               denyAccess(
                 `${
                   proxyPreferred ? '代理' : '直连'
-                }缓存下载失败（${reason}），请更换播放源`
+                }缓存下载失败（${reason}），已重试 3 次，请更换播放源`
               );
               return;
             }
@@ -637,7 +772,7 @@ export class VideoPrefetcher {
                   ? proxyError.message
                   : '网络请求失败';
               denyAccess(
-                `直连失败（${reason}），代理也失败（${proxyReason}），请更换播放源`
+                `直连失败（${reason}），代理也失败（${proxyReason}），均已重试 3 次，请更换播放源`
               );
               return;
             }
@@ -647,42 +782,56 @@ export class VideoPrefetcher {
           const costMs = Math.max(1, Date.now() - startedAt);
 
           if (signal.aborted || accessError) return;
-          const putResult = await putCachedSegmentResilient(
-            cacheKey,
-            buffer,
-            response.headers.get('Content-Type'),
-            settings
+          const releaseWrite = await prefetchWriteLimiter.acquire(
+            requests.signal
           );
-          // 已经落盘的片段仍需登记元数据；新队列会等待本轮写入结束。
-          if (signal.aborted && putResult !== 'ok') return;
-          if (putResult === 'quota') {
-            storageFull = true;
-            return;
-          }
-          if (putResult !== 'ok') continue;
+          try {
+            const putResult = await putCachedSegmentResilient(
+              cacheKey,
+              buffer,
+              response.headers.get('Content-Type'),
+              settings
+            );
+            // 已经落盘的片段仍需登记元数据；新队列会等待本轮写入结束。
+            if (signal.aborted && putResult !== 'ok') return;
+            if (putResult === 'quota') {
+              storageFull = true;
+              requests.abort();
+              this.setThrottled(false);
+              return;
+            }
+            if (putResult !== 'ok') continue;
 
-          await metaStore.put({
-            key: cacheKey,
-            episodeKey: options.episodeKey,
-            title: options.title || '未知影片',
-            source: options.source || '未知来源',
-            index: segmentIndex + 1,
-            startTime: durationsUsable
-              ? segmentIndex === 0
-                ? 0
-                : cumulative[segmentIndex - 1]
-              : undefined,
-            endTime: durationsUsable ? cumulative[segmentIndex] : undefined,
-            bytes: buffer.byteLength,
-            costMs,
-            lastAccess: Date.now(),
-          });
+            await metaStore.put({
+              key: cacheKey,
+              episodeKey: options.episodeKey,
+              title: options.title || '未知影片',
+              source: options.source || '未知来源',
+              index: segmentIndex + 1,
+              startTime: durationsUsable
+                ? segmentIndex === 0
+                  ? 0
+                  : cumulative[segmentIndex - 1]
+                : undefined,
+              endTime: durationsUsable ? cumulative[segmentIndex] : undefined,
+              bytes: buffer.byteLength,
+              costMs,
+              lastAccess: Date.now(),
+            });
+          } finally {
+            releaseWrite();
+          }
 
           if (signal.aborted || accessError) return;
+          versions[segmentIndex] += 1;
+          updateSegmentStats(segmentIndex, buffer.byteLength);
+          emitSegmentStats();
           await refreshStats();
         } catch {
           // 单个片段失败（含 abort）不影响整轮，继续下一个
           if (signal.aborted || accessError) return;
+        } finally {
+          releaseDownload?.();
         }
 
         if (Date.now() - lastEvictAt > EVICT_INTERVAL_MS) {
@@ -691,6 +840,8 @@ export class VideoPrefetcher {
           if (signal.aborted) return;
           await refreshStats(true);
         }
+        // Break up fast cache writes instead of chaining an entire playlist in microtasks.
+        if (cursor % 16 === 0) await waitForRetry(0, signal);
       }
     };
 
