@@ -8,6 +8,22 @@ export interface ProgressPreviewMove {
   input: 'mouse' | 'touch';
 }
 
+/**
+ * 拖动落地之后的「用户意图保护」窗口（毫秒）。
+ *
+ * hls.js 在换档（ABR 自动降码率 / 手动切画质）时会 flush 前向缓冲；如果此时
+ * 正好有一次 seek 在等数据，浏览器会把播放位置退回最后一个可播位置——表现
+ * 就是进度条自己跳回拖动之前的位置，而且之后每次拖动都被打回。这里记住用户
+ * 选定的落点，在窗口内发现位置被打回就重新申明一次。
+ */
+const SEEK_GUARD_WINDOW_MS = 8_000;
+
+/** 最多重新申明多少次；超过就认输，避免与播放器无限互抢 currentTime */
+const SEEK_GUARD_MAX_RETRY = 4;
+
+/** 判定「已落到目标位置」的容差（秒） */
+const SEEK_GUARD_TOLERANCE = 1;
+
 /** Keep playback running while scrubbing; commit the selected time on release. */
 export function bindDeferredProgressSeek(art: Artplayer): () => void {
   const progress = art.template.$progress;
@@ -22,6 +38,15 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
   let restoringBar = false;
   let systemGesture = false;
   let suppressVideoClickUntil = 0;
+  /** 最近一次用户拖动选定的落点与保护截止时间 */
+  let committedSeek: {
+    target: number;
+    deadline: number;
+    retries: number;
+  } | null = null;
+  /** 落地时时长还不可用：记住进度比例，等时长恢复后补做 */
+  let pendingRatio: number | null = null;
+  let pendingDeadline = 0;
   let gesture: {
     id: number;
     x: number;
@@ -53,6 +78,69 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     updateBar(event);
   };
 
+  /** 把当前 ratio 落地成真实 seek；时长不可用时返回 false（不改变播放位置） */
+  const commitSeek = (): boolean => {
+    const duration = art.duration;
+    if (!Number.isFinite(duration) || duration <= 0) return false;
+    const target = Math.min(1, Math.max(0, ratio)) * duration;
+    try {
+      art.seek = target;
+    } catch {
+      return false;
+    }
+    committedSeek = {
+      target,
+      deadline: Date.now() + SEEK_GUARD_WINDOW_MS,
+      retries: 0,
+    };
+    pendingRatio = null;
+    return true;
+  };
+
+  /**
+   * 校验上次拖动是否真的落地。
+   *
+   * 只要播放位置仍明显落后于用户选定的落点，就说明这次 seek 被 hls.js 的
+   * 缓冲 flush（换档/自动降档）或浏览器自身的回退吃掉了，重新申明一次。
+   * 只会「向前纠正」，因此不会干扰用户主动向后拖动。
+   */
+  const verifyCommittedSeek = () => {
+    const pending = committedSeek;
+    if (!pending) return;
+    if (Date.now() > pending.deadline) {
+      committedSeek = null;
+      return;
+    }
+    // 拖动 / seek / 重新缓冲仍在进行：等它自己出结果
+    if (drag || video.seeking || video.readyState === 0) return;
+    // 已经落在目标位置（或更后面）：本次拖动生效
+    if (video.currentTime >= pending.target - SEEK_GUARD_TOLERANCE) {
+      committedSeek = null;
+      return;
+    }
+    if (pending.retries >= SEEK_GUARD_MAX_RETRY) {
+      committedSeek = null;
+      return;
+    }
+    pending.retries += 1;
+    try {
+      video.currentTime = pending.target;
+    } catch {
+      committedSeek = null;
+    }
+  };
+
+  /** 时长恢复可用后，补做那次因 duration 失效而没落地的拖动 */
+  const applyPendingSeek = () => {
+    if (pendingRatio === null) return;
+    if (Date.now() > pendingDeadline) {
+      pendingRatio = null;
+      return;
+    }
+    ratio = pendingRatio;
+    commitSeek();
+  };
+
   const finish = (commit: boolean, keepControls = true) => {
     gesture = null;
     if (!drag) return;
@@ -61,9 +149,13 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     touchId = null;
     // The show setter also restarts Artplayer's normal auto-hide countdown.
     if (keepControls && !art.isLock) art.controls.show = true;
-    if (commit && Number.isFinite(art.duration) && art.duration > 0) {
-      art.seek = ratio * art.duration;
-    } else {
+    if (commit && !commitSeek()) {
+      // 时长暂时不可用（hls.js flush 缓冲时 MediaSource 时长可能短暂失效）：
+      // 记住目标进度等时长恢复后补做，而不是把进度条打回拖动前的位置
+      pendingRatio = ratio;
+      pendingDeadline = Date.now() + SEEK_GUARD_WINDOW_MS;
+      art.emit('setBar', 'played', art.played);
+    } else if (!commit) {
       art.emit('setBar', 'played', art.played);
     }
     progress.dispatchEvent(new CustomEvent(PROGRESS_PREVIEW_END));
@@ -283,6 +375,10 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     passive: true,
   });
   video.addEventListener('click', onVideoClick, true);
+  video.addEventListener('seeked', verifyCommittedSeek);
+  video.addEventListener('timeupdate', verifyCommittedSeek);
+  video.addEventListener('durationchange', applyPendingSeek);
+  video.addEventListener('loadedmetadata', applyPendingSeek);
   progress.addEventListener('mousedown', onMouseDown, true);
   progress.addEventListener('touchstart', onTouchStart, {
     capture: true,
@@ -304,9 +400,15 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
 
   const cleanup = () => {
     finish(false, false);
+    committedSeek = null;
+    pendingRatio = null;
     player.removeEventListener('touchstart', onPlayerTouchStart, true);
     video.removeEventListener('touchstart', onGestureStart, true);
     video.removeEventListener('click', onVideoClick, true);
+    video.removeEventListener('seeked', verifyCommittedSeek);
+    video.removeEventListener('timeupdate', verifyCommittedSeek);
+    video.removeEventListener('durationchange', applyPendingSeek);
+    video.removeEventListener('loadedmetadata', applyPendingSeek);
     progress.removeEventListener('mousedown', onMouseDown, true);
     progress.removeEventListener('touchstart', onTouchStart, true);
     progress.removeEventListener('click', onClick, true);

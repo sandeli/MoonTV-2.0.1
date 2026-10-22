@@ -3,7 +3,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import AddDownloadModal from '@/components/AddDownloadModal';
@@ -14,7 +14,11 @@ import EpisodeSelector from '@/components/EpisodeSelector';
 import PageLayout from '@/components/PageLayout';
 
 import { PlayerOverlayHeader } from './components/PlayerOverlayHeader';
-import { ErrorView, LoadingView, VideoLoadingMask } from './components/PlayStatusView';
+import {
+  ErrorView,
+  LoadingView,
+  VideoLoadingMask,
+} from './components/PlayStatusView';
 import { VideoDetailPanel } from './components/VideoDetailPanel';
 import { formatTime } from './play-utils';
 import { usePlayEngine } from './usePlayEngine';
@@ -71,7 +75,6 @@ export default function PlayClient() {
     handleEpisodeChange,
     // 弹幕
     showDanmakuSelector,
-    isDanmakuLoading,
     handleDanmakuSelect,
     handleDanmakuClose,
     // 缓存管理
@@ -83,6 +86,19 @@ export default function PlayClient() {
     handleToggleFavorite,
     handleToggleFollowing,
   } = usePlayEngine();
+
+  // 播放器内的弹窗（弹幕源 / 缓存管理）打开时锁住页面滚动，
+  // 避免移动端未全屏时手指在遮罩上滑动仍然滚动到背后的页面内容。
+  const isPlayerModalOpen = showDanmakuSelector || showCacheManager;
+
+  useEffect(() => {
+    if (!isPlayerModalOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isPlayerModalOpen]);
 
   if (loading) {
     return (
@@ -124,7 +140,11 @@ export default function PlayClient() {
           <div className='grid grid-cols-1 md:grid-cols-4 lg:h-[500px] xl:h-[650px] 2xl:h-[750px]'>
             {/* 播放器 */}
             <div className='h-full md:col-span-3'>
-              <div className='relative isolate w-full h-[300px] lg:h-full'>
+              <div
+                className={`relative isolate w-full h-[300px] lg:h-full ${
+                  isPlayerModalOpen ? 'z-[1200]' : ''
+                }`}
+              >
                 <div
                   ref={artRef}
                   className='bg-black w-full h-full overflow-hidden shadow-lg'
@@ -136,7 +156,9 @@ export default function PlayClient() {
                         title={
                           videoTitle
                             ? totalEpisodes > 1
-                              ? `${videoTitle} · 第 ${currentEpisodeIndex + 1} 集`
+                              ? `${videoTitle} · 第 ${
+                                  currentEpisodeIndex + 1
+                                } 集`
                               : videoTitle
                             : ''
                         }
@@ -147,7 +169,8 @@ export default function PlayClient() {
                           className='moontv-progress-preview pointer-events-none absolute z-40'
                           style={{
                             left: `clamp(calc(5rem + 8px), ${preview.left}%, calc(100% - 5rem - 8px))`,
-                            bottom: 'calc(var(--art-bottom-height, 52px) - 16px)',
+                            bottom:
+                              'calc(var(--art-bottom-height, 52px) - 16px)',
                             transform: 'translateX(-50%)',
                           }}
                         >
@@ -198,13 +221,6 @@ export default function PlayClient() {
                           stage={videoLoadingStage}
                         />
                       </div>
-                      {isDanmakuLoading && (
-                        <div className='pointer-events-none absolute left-4 right-4 top-16 z-40 flex justify-center'>
-                          <div className='rounded-lg bg-gray-800/90 px-4 py-2 text-white shadow-lg'>
-                            正在自动加载弹幕...
-                          </div>
-                        </div>
-                      )}
                       {showCacheManager && (
                         <div
                           className='moontv-player-modal'
@@ -286,13 +302,18 @@ export default function PlayClient() {
         initialUrl={videoUrl || ''}
         episodes={(detail?.episodes || []).map((url, i) => ({
           url,
-          title: `${videoTitle}_${detail?.episodes_titles?.[i] || `第${i + 1}集`}`,
+          title: `${videoTitle}_${
+            detail?.episodes_titles?.[i] || `第${i + 1}集`
+          }`,
           label: detail?.episodes_titles?.[i] || `第${i + 1}集`,
         }))}
         currentEpisodeIndex={currentEpisodeIndex}
         initialTitle={`${videoTitle}${
           totalEpisodes > 1
-            ? `_${detail?.episodes_titles?.[currentEpisodeIndex] || `第${currentEpisodeIndex + 1}集`}`
+            ? `_${
+                detail?.episodes_titles?.[currentEpisodeIndex] ||
+                `第${currentEpisodeIndex + 1}集`
+              }`
             : ''
         }`}
         skipConfig={skipConfig}
