@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any,no-console,no-case-declarations */
 
+import { memoizeAsync } from './async-cache';
 import { DoubanItem, DoubanResult } from './types';
 
 interface DoubanCategoriesParams {
@@ -547,52 +548,10 @@ export async function getDoubanCollection(
 }
 
 /**
- * 豆瓣条目详情（剧情简介等）
+ * 获取豆瓣条目简介。
+ * 根据代理设置选择服务端接口或客户端代理。
  */
-export interface DoubanSubjectDetail {
-  id: string;
-  title: string;
-  year: string;
-  rate: string;
-  intro: string;
-}
-
-interface DoubanSubjectApiResponse {
-  id?: string;
-  title?: string;
-  year?: string;
-  intro?: string;
-  rating?: { value?: number };
-}
-
-// 详情内存缓存，避免同一卡片多次打开菜单时重复请求
-const doubanDetailCache = new Map<string, DoubanSubjectDetail>();
-
-function normalizeDoubanSubjectDetail(
-  id: string,
-  data: DoubanSubjectApiResponse
-): DoubanSubjectDetail {
-  return {
-    id: data.id || id,
-    title: data.title || '',
-    year: data.year || '',
-    rate: data.rating?.value ? data.rating.value.toFixed(1) : '',
-    intro: data.intro || '',
-  };
-}
-
-/**
- * 获取豆瓣条目详情（剧情简介）。
- * 根据代理设置选择服务端接口或客户端代理，并做内存缓存。
- */
-export async function getDoubanDetail(
-  id: string
-): Promise<DoubanSubjectDetail> {
-  const cached = doubanDetailCache.get(id);
-  if (cached) {
-    return cached;
-  }
-
+async function requestDoubanIntro(id: string): Promise<string> {
   const { proxyType, proxyUrl } = getDoubanProxyConfig();
   const target = `https://m.douban.com/rexxar/api/v2/subject/${encodeURIComponent(
     id
@@ -631,17 +590,21 @@ export async function getDoubanDetail(
   }
 
   if (!response.ok) {
-    throw new Error(`获取豆瓣详情失败: ${response.status}`);
+    throw new Error(`获取豆瓣简介失败: ${response.status}`);
   }
 
   // 直连模式返回 { desc }，代理模式返回豆瓣条目原始结构
-  const data = (await response.json()) as DoubanSubjectApiResponse & {
-    desc?: string;
+  const data = (await response.json()) as {
+    intro?: unknown;
+    desc?: unknown;
   };
-  const detail = normalizeDoubanSubjectDetail(id, data);
-  if (!detail.intro && typeof data.desc === 'string') {
-    detail.intro = data.desc;
+  if (typeof data.intro === 'string') {
+    return data.intro;
   }
-  doubanDetailCache.set(id, detail);
-  return detail;
+  return typeof data.desc === 'string' ? data.desc : '';
 }
+
+export const getDoubanIntro = memoizeAsync(
+  (id: string) => id,
+  requestDoubanIntro
+);

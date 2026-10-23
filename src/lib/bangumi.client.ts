@@ -1,4 +1,7 @@
 'use client';
+
+import { memoizeAsync } from './async-cache';
+
 export interface BangumiCalendarData {
   weekday: {
     en: string;
@@ -55,32 +58,7 @@ export async function GetBangumiCalendarData(): Promise<BangumiCalendarData[]> {
   }
 }
 
-export interface BangumiSubjectDetail {
-  id: string;
-  title: string;
-  year: string;
-  rate: string;
-  summary: string;
-}
-
-// 详情内存缓存，避免同一卡片多次打开菜单时重复请求
-const BANGUMI_SUBJECT_CACHE_LIMIT = 200;
-const bangumiSubjectCache = new Map<string, BangumiSubjectDetail>();
-// 并发去重：同一 id 在请求返回前只发起一次网络请求
-const bangumiSubjectRequests = new Map<string, Promise<BangumiSubjectDetail>>();
-
-function cacheSubjectDetail(id: string, detail: BangumiSubjectDetail): void {
-  if (bangumiSubjectCache.size >= BANGUMI_SUBJECT_CACHE_LIMIT) {
-    // 简单的 FIFO 淘汰，防止长时间浏览后缓存无限增长
-    const oldestKey = bangumiSubjectCache.keys().next().value;
-    if (oldestKey !== undefined) {
-      bangumiSubjectCache.delete(oldestKey);
-    }
-  }
-  bangumiSubjectCache.set(id, detail);
-}
-
-async function requestSubjectDetail(id: string): Promise<BangumiSubjectDetail> {
+async function requestSubjectIntro(id: string): Promise<string> {
   const response = await fetch(
     `/api/detail?provider=bangumi&id=${encodeURIComponent(id)}&fields=desc`,
     {
@@ -94,48 +72,14 @@ async function requestSubjectDetail(id: string): Promise<BangumiSubjectDetail> {
   }
 
   const data = (await response.json()) as { desc?: unknown };
-  const detail: BangumiSubjectDetail = {
-    id,
-    title: '',
-    year: '',
-    rate: '',
-    summary: typeof data.desc === 'string' ? data.desc : '',
-  };
-  cacheSubjectDetail(id, detail);
-  return detail;
+  return typeof data.desc === 'string' ? data.desc : '';
 }
 
 /**
- * 获取 Bangumi 条目详情（剧情简介）。
+ * 获取 Bangumi 条目简介。
  * 通过服务端 /api/detail?provider=bangumi 获取，复用站点配置的 Bangumi 代理。
- * 失败时向调用方抛出异常，由调用方决定降级方式。
  */
-export function GetBangumiSubjectDetail(
-  id: string
-): Promise<BangumiSubjectDetail> {
-  const cached = bangumiSubjectCache.get(id);
-  if (cached) {
-    // 命中缓存后刷新顺序，实现近似 LRU 的淘汰顺序
-    bangumiSubjectCache.delete(id);
-    bangumiSubjectCache.set(id, cached);
-    return Promise.resolve(cached);
-  }
-
-  const inflight = bangumiSubjectRequests.get(id);
-  if (inflight) {
-    return inflight;
-  }
-
-  const request = requestSubjectDetail(id);
-  bangumiSubjectRequests.set(id, request);
-
-  void request
-    .catch(() => {
-      // 失败结果由调用方处理，此处仅避免 promises 未被消费导致的未处理拒绝
-    })
-    .finally(() => {
-      bangumiSubjectRequests.delete(id);
-    });
-
-  return request;
-}
+export const getBangumiSubjectIntro = memoizeAsync(
+  (id: string) => id,
+  requestSubjectIntro
+);

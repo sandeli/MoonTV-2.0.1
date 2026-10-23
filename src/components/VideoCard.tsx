@@ -17,7 +17,6 @@ import React, {
   useState,
 } from 'react';
 
-import { GetBangumiSubjectDetail } from '@/lib/bangumi.client';
 import {
   deleteFavorite,
   deleteFollowing,
@@ -29,10 +28,9 @@ import {
   saveFollowing,
   subscribeToDataUpdates,
 } from '@/lib/db.client';
-import { getDoubanDetail } from '@/lib/douban.client';
+import { getIntro } from '@/lib/intro.client';
 import { SearchResult } from '@/lib/types';
 import { processImageUrl } from '@/lib/utils';
-import { getVideoDesc } from '@/lib/video-detail.client';
 
 import FollowingIcon from '@/components/FollowingIcon';
 import { ImagePlaceholder } from '@/components/ImagePlaceholder';
@@ -163,60 +161,40 @@ export default function VideoCard({
       : 'tv'
     : type;
 
-  // 各类卡片打开操作菜单时拉取剧情简介：
-  // - 豆瓣卡片：豆瓣条目简介
-  // - 每日放送（Bangumi）：Bangumi 条目简介
-  // - 播放记录 / 收藏 / 搜索：优先豆瓣 ID，缺失或失败时回退到播放源详情
+  // 各类卡片打开操作菜单时拉取剧情简介（来源选择统一收敛到 getIntro）
   useEffect(() => {
     if (!isActionOpen) return;
 
-    const vodDescFetcher =
-      from !== 'douban' && actualSource && actualId
-        ? () => getVideoDesc(actualSource, actualId, actualTitle)
-        : null;
+    const target = {
+      bangumiId: isBangumi ? actualDoubanId : undefined,
+      doubanId: isBangumi ? undefined : actualDoubanId,
+      source: from !== 'douban' ? actualSource : undefined,
+      id: from !== 'douban' ? actualId : undefined,
+      title: actualTitle,
+    };
 
-    let introKey: string | null = null;
-    if (isBangumi && actualDoubanId) {
-      introKey = `bangumi:${actualDoubanId}`;
-    } else if (actualDoubanId) {
-      introKey = `douban:${actualDoubanId}`;
-    } else if (vodDescFetcher) {
-      introKey = `vod:${actualSource}:${actualId}`;
-    }
+    const hasTarget =
+      target.bangumiId || target.doubanId || (target.source && target.id);
+    if (!hasTarget) return;
 
-    if (!introKey || introLoadedRef.current === introKey) return;
+    const key = target.bangumiId
+      ? `bangumi:${target.bangumiId}`
+      : target.doubanId
+      ? `douban:${target.doubanId}`
+      : `vod:${target.source}:${target.id}`;
+
+    if (introLoadedRef.current === key) return;
 
     let cancelled = false;
     // 条目切换时先清空旧简介，避免请求失败时展示上一部影片的内容
     setCardIntro('');
     setCardIntroLoading(true);
 
-    let introPromise: Promise<string>;
-    if (isBangumi && actualDoubanId) {
-      introPromise = GetBangumiSubjectDetail(String(actualDoubanId)).then(
-        (detail) => detail.summary
-      );
-    } else if (actualDoubanId) {
-      const doubanIntroPromise = getDoubanDetail(String(actualDoubanId)).then(
-        (detail) => detail.intro
-      );
-      // 豆瓣简介为空或请求失败时，回退到播放源详情中的简介
-      introPromise = vodDescFetcher
-        ? doubanIntroPromise
-            .then((intro) => (intro ? intro : vodDescFetcher()))
-            .catch(() => vodDescFetcher())
-        : doubanIntroPromise;
-    } else if (vodDescFetcher) {
-      introPromise = vodDescFetcher();
-    } else {
-      return;
-    }
-
-    introPromise
+    getIntro(target)
       .then((intro) => {
         if (cancelled) return;
-        introLoadedRef.current = introKey;
-        setCardIntro(intro || '');
+        introLoadedRef.current = key;
+        setCardIntro(intro);
       })
       .catch((err) => {
         // eslint-disable-next-line no-console

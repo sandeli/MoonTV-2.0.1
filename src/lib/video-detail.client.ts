@@ -1,31 +1,12 @@
 'use client';
 
+import { memoizeAsync } from './async-cache';
+
 /**
- * 播放源详情简介获取（浏览器端）。
- * 用于播放记录 / 收藏 / 搜索等没有豆瓣条目 ID 的卡片。
+ * 播放源简介获取（浏览器端）。
+ * 简介来自播放源搜索结果中的 `vod_content`，与播放页保持一致。
  */
-
-const CACHE_LIMIT = 200;
-const descCache = new Map<string, string>();
-// 并发去重：同一 source+id 在请求返回前只发起一次网络请求
-const descRequests = new Map<string, Promise<string>>();
-
-function getCacheKey(source: string, id: string, title: string): string {
-  return `${source}::${id}::${title}`;
-}
-
-function cacheDesc(key: string, desc: string): void {
-  if (descCache.size >= CACHE_LIMIT) {
-    // 简单 FIFO 淘汰，避免长时间浏览后缓存无限增长
-    const oldestKey = descCache.keys().next().value;
-    if (oldestKey !== undefined) {
-      descCache.delete(oldestKey);
-    }
-  }
-  descCache.set(key, desc);
-}
-
-async function requestDesc(
+async function requestVideoDesc(
   source: string,
   id: string,
   title: string
@@ -51,48 +32,13 @@ async function requestDesc(
     }
 
     const data = (await response.json()) as { desc?: unknown };
-    const desc = typeof data.desc === 'string' ? data.desc : '';
-    cacheDesc(getCacheKey(source, id, title), desc);
-    return desc;
+    return typeof data.desc === 'string' ? data.desc : '';
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
-/**
- * 获取播放源条目的剧情简介。
- * 命中缓存直接返回；同一内容的并发请求会复用同一个 Promise。
- */
-export function getVideoDesc(
-  source: string,
-  id: string,
-  title = ''
-): Promise<string> {
-  const key = getCacheKey(source, id, title);
-
-  const cached = descCache.get(key);
-  if (cached !== undefined) {
-    // 命中后刷新顺序，实现近似 LRU 的淘汰顺序
-    descCache.delete(key);
-    descCache.set(key, cached);
-    return Promise.resolve(cached);
-  }
-
-  const inflight = descRequests.get(key);
-  if (inflight) {
-    return inflight;
-  }
-
-  const request = requestDesc(source, id, title);
-  descRequests.set(key, request);
-
-  void request
-    .catch(() => {
-      // 失败结果由调用方处理，此处仅避免未处理的 Promise 拒绝
-    })
-    .finally(() => {
-      descRequests.delete(key);
-    });
-
-  return request;
-}
+export const getVideoDesc = memoizeAsync(
+  (source: string, id: string, title = '') => `${source}::${id}::${title}`,
+  requestVideoDesc
+);

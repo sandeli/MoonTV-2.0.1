@@ -50,7 +50,8 @@ export async function GET(request: NextRequest) {
         { headers: buildCacheHeaders(cacheTime) }
       );
     } catch {
-      return NextResponse.json({ desc: '' });
+      // 返回 502 让客户端下次重试，避免把暂态失败缓存成空简介
+      return NextResponse.json({ error: '获取豆瓣简介失败' }, { status: 502 });
     }
   }
 
@@ -66,7 +67,13 @@ export async function GET(request: NextRequest) {
         { headers: buildCacheHeaders(cacheTime) }
       );
     } catch {
-      return NextResponse.json({ desc: '' });
+      // 返回 502 让客户端下次重试，避免把暂态失败缓存成空简介
+      return NextResponse.json(
+        { error: '获取 Bangumi 简介失败' },
+        {
+          status: 502,
+        }
+      );
     }
   }
 
@@ -103,6 +110,7 @@ export async function GET(request: NextRequest) {
 
     if (descOnly) {
       let desc = '';
+      let searchMatched = false;
 
       if (title) {
         try {
@@ -113,9 +121,12 @@ export async function GET(request: NextRequest) {
             12000
           )) {
             const match = batch.find((item) => String(item.id) === String(id));
-            if (match?.desc) {
-              desc = match.desc;
-              break;
+            if (match) {
+              searchMatched = true;
+              if (match.desc) {
+                desc = match.desc;
+                break;
+              }
             }
           }
         } catch {
@@ -128,7 +139,13 @@ export async function GET(request: NextRequest) {
           const detail = await getDetailFromApi(apiSite, id);
           desc = detail.desc || '';
         } catch {
-          // 详情失败时返回空简介，不影响卡片其它功能
+          // 搜索未命中且详情也失败时返回 502，让客户端下次重试
+          if (!searchMatched) {
+            return NextResponse.json(
+              { error: '获取简介失败' },
+              { status: 502 }
+            );
+          }
         }
       }
 
