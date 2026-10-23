@@ -5,6 +5,7 @@ import { ChevronUp, Search, X } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 
+import { getSearchConcurrency } from '@/lib/concurrency';
 import {
   addSearchHistory,
   clearSearchHistory,
@@ -309,9 +310,10 @@ function SearchPageClient() {
         params.set('sources', searchSources.join(','));
       }
 
-      // 添加超时时间参数
+      // 添加超时时间与并发数参数
       const timeoutSeconds = getRequestTimeout();
       params.set('timeout', timeoutSeconds.toString());
+      params.set('concurrency', getSearchConcurrency().toString());
 
       const response = await fetch(`/api/search?${params.toString()}`, {
         signal: controller.signal,

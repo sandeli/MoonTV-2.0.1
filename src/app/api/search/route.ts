@@ -3,7 +3,7 @@
 import { NextRequest } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { mapWithConcurrency } from '@/lib/concurrency';
+import { clampSearchConcurrency, mapWithConcurrency } from '@/lib/concurrency';
 import {
   ApiSite,
   getAvailableApiSites,
@@ -14,15 +14,6 @@ import { searchFromApiStream } from '@/lib/downstream';
 import { yellowWords } from '@/lib/yellow';
 
 export const runtime = 'edge';
-
-// 单个搜索请求同时查询的上游源数量上限，避免源多时打满上游限流或 Edge 连接数。
-// 可用 NEXT_PUBLIC_SEARCH_SOURCE_CONCURRENCY 覆盖，默认 6。
-const SEARCH_SOURCE_CONCURRENCY = (() => {
-  const configured = Number(process.env.NEXT_PUBLIC_SEARCH_SOURCE_CONCURRENCY);
-  return Number.isFinite(configured) && configured > 0
-    ? Math.floor(configured)
-    : 6;
-})();
 
 export async function GET(request: NextRequest) {
   // 检查是否为本地存储模式
@@ -47,6 +38,12 @@ export async function GET(request: NextRequest) {
   const enableStream = streamParam ? streamParam !== '0' : false; // 无该参数关闭流式
   const timeoutParam = searchParams.get('timeout');
   const timeout = timeoutParam ? parseInt(timeoutParam, 10) * 1000 : undefined; // 转换为毫秒
+
+  // 单次搜索同时查询的上游源数量，由前端搜索设置传入。
+  // 服务端再做一次收敛，避免被构造请求放大到不受控的并发。
+  const searchConcurrency = clampSearchConcurrency(
+    searchParams.get('concurrency')
+  );
 
   const config = await getConfig();
 
@@ -151,7 +148,7 @@ export async function GET(request: NextRequest) {
 
     const results = await mapWithConcurrency(
       apiSites,
-      SEARCH_SOURCE_CONCURRENCY,
+      searchConcurrency,
       searchSite
     );
     const aggregatedResults = results.flatMap((r) => r.siteResults);
@@ -256,7 +253,7 @@ export async function GET(request: NextRequest) {
     };
 
     // 等所有 site 跑完（受并发上限约束）
-    await mapWithConcurrency(apiSites, SEARCH_SOURCE_CONCURRENCY, searchSite);
+    await mapWithConcurrency(apiSites, searchConcurrency, searchSite);
 
     if (failedSources.length > 0) {
       await safeWrite({ failedSources });
