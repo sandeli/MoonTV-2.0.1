@@ -77,6 +77,7 @@ import {
 } from './deferred-progress-seek';
 import { useVideoActions } from './hooks/useVideoActions';
 import { useWakeLock } from './hooks/useWakeLock';
+import { bindMobileGestures } from './mobile-gestures';
 import {
   calculateSourceScore,
   createCustomHlsLoader,
@@ -133,6 +134,43 @@ const STALL_GRACE_AFTER_SEEK_MS = 4_000;
  */
 const STALL_GRACE_AFTER_LEVEL_SWITCH_MS = 3_000;
 
+/**
+ * 生成只读的设置说明行。
+ *
+ * Artplayer 的 setting 行默认是可点击选项；说明文字不应被选中，
+ * 因此关掉指针事件并隐藏左侧的勾选图标，只作为静态列表展示。
+ */
+function buildReadonlySettingRows(items: string[]) {
+  return items.map((html) => ({
+    html,
+    mounted: (item: HTMLElement) => {
+      item.style.pointerEvents = 'none';
+      item.style.justifyContent = 'center';
+
+      const icon = item.querySelector<HTMLElement>(
+        '.art-setting-item-left-icon'
+      );
+      if (icon) icon.style.display = 'none';
+
+      // 说明文字居中展示，而不是沿用设置项的左侧对齐
+      const left = item.querySelector<HTMLElement>('.art-setting-item-left');
+      if (left) {
+        left.style.flex = '1';
+        left.style.justifyContent = 'center';
+      }
+      const text = item.querySelector<HTMLElement>(
+        '.art-setting-item-left-text'
+      );
+      if (text) {
+        text.style.width = '100%';
+        text.style.textAlign = 'center';
+      }
+      const right = item.querySelector<HTMLElement>('.art-setting-item-right');
+      if (right) right.style.display = 'none';
+    },
+  }));
+}
+
 /** 「画质」设置项的 name，`setting.update` 靠它定位 */
 const QUALITY_SETTING_NAME = '画质';
 
@@ -162,6 +200,9 @@ const NEXT_EPISODE_HORIZON_SECONDS = 420;
  * 否则新影片开始播放时，上一部片的缓存会一直留在本地。
  */
 const LAST_CACHE_VIDEO_KEY = 'moontv:last-cache-video';
+
+/** 首次进入播放页时提示一次帮助入口 */
+const HELP_TIP_SEEN_KEY = 'moontv:help-tip-seen';
 
 function readLastCacheVideoKey(): string | null {
   try {
@@ -2340,8 +2381,10 @@ export function usePlayEngine() {
         airplay: true,
         theme: '#22c55e',
         lang: 'zh-cn',
-        hotkey: false,
-        fastForward: true,
+        // 桌面端启用 Artplayer 内置快捷键：空格播放/暂停、方向键快进/音量
+        hotkey: true,
+        // 长按倍速由 mobile-gestures 统一接管，避免与内置 fastForward 叠加
+        fastForward: false,
         autoOrientation: true,
         lock: true,
         moreVideoAttr: {
@@ -2740,6 +2783,22 @@ export function usePlayEngine() {
               return '';
             },
           },
+          {
+            name: '操作说明',
+            html: '操作说明',
+            tooltip: '点击查看',
+            selector: buildReadonlySettingRows([
+              '左右滑动画面：快进 / 快退',
+              '双击左侧 / 右侧：快退 / 快进 10 秒',
+              '左半屏上下滑：亮度（全屏）',
+              '右半屏上下滑：音量（全屏）',
+              '长按画面：2x 倍速，松手恢复',
+              '空格：播放 / 暂停',
+              '← / →：快退 / 快进 5 秒',
+              '↑ / ↓：音量 + / -',
+              'Esc：退出网页全屏',
+            ]),
+          },
         ],
         // 控制栏配置
         controls: [
@@ -2755,7 +2814,12 @@ export function usePlayEngine() {
         ],
       });
 
-      bindDeferredProgressSeek(artPlayerRef.current);
+      // 移动端手势反馈（双击快退/快进、全屏竖滑音量/亮度）与拖动共用一套状态机
+      const gestures = bindMobileGestures(artPlayerRef.current);
+      bindDeferredProgressSeek(artPlayerRef.current, {
+        vertical: gestures.vertical,
+        longPress: gestures.longPress,
+      });
 
       const playerEl =
         (artPlayerRef.current.template?.$player as HTMLElement | undefined) ||
@@ -2769,6 +2833,20 @@ export function usePlayEngine() {
       // 监听播放器事件
       artPlayerRef.current.on('ready', () => {
         setError(null);
+
+        // 首次进入播放页时只提示一次帮助入口
+        try {
+          if (window.localStorage.getItem(HELP_TIP_SEEN_KEY) !== '1') {
+            pushPlayerNotice(
+              artPlayerRef.current,
+              '偷偷告诉你：设置里藏着一些小惊喜，翻一翻能解锁更多隐藏操作～',
+              { key: 'help-entry-tip', durationMs: 6000 }
+            );
+            window.localStorage.setItem(HELP_TIP_SEEN_KEY, '1');
+          }
+        } catch {
+          // 隐私模式下 localStorage 不可用时忽略
+        }
 
         // 捕获弹幕插件实例
         if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {

@@ -321,6 +321,12 @@ div[data-media-provider] video {
   height: 100%;
   object-fit: contain;
 }
+/* 移动端长按视频会触发浏览器原生长按菜单（复制视频帧 / 画中画），由手势逻辑接管 */
+.art-video-player video {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .art-poster {
   background-size: contain !important;
   background-position: center center !important;
@@ -434,4 +440,72 @@ div[data-media-provider] video {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* 移动端手势反馈：亮度遮罩盖在视频上，不挡住字幕 / 弹幕 / 控制栏 */
+.art-video-player .moontv-gesture-dim {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  background-color: #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s linear;
+}
+
+/* 手势 HUD：音量 / 亮度 / 双击快进，仿系统音量浮层的顶部横向滑杆 */
+.art-video-player .moontv-gesture-hud {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--art-padding) + 10px);
+  z-index: 90;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: min(70%, 240px);
+  padding: 6px 12px;
+  border-radius: 999px;
+  background-color: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  color: #fff;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-50%) translateY(-4px);
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s;
+}
+
+.art-video-player .moontv-gesture-hud.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+.art-video-player .moontv-gesture-hud-text {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.art-video-player .moontv-gesture-hud-track {
+  width: 100px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.28);
+}
+
+.art-video-player .moontv-gesture-hud-bar {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background-color: #fff;
+  /* 手势滑杆必须实时跟手，不能加过渡，否则会始终落后于手指 */
+  transition: none;
+  will-change: width;
 }

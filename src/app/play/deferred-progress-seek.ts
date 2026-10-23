@@ -1,5 +1,10 @@
 import type Artplayer from 'artplayer';
 
+import type {
+  LongPressHandlers,
+  VerticalSwipeHandlers,
+} from './mobile-gestures';
+
 export const PROGRESS_PREVIEW_MOVE = 'moontv-progress-preview-move';
 export const PROGRESS_PREVIEW_END = 'moontv-progress-preview-end';
 
@@ -7,6 +12,18 @@ export interface ProgressPreviewMove {
   ratio: number;
   input: 'mouse' | 'touch';
 }
+
+export interface DeferredProgressSeekOptions {
+  /** 全屏下垂直滑动：左半屏亮度、右半屏音量 */
+  vertical?: VerticalSwipeHandlers;
+  /** 长按倍速播放 */
+  longPress?: LongPressHandlers;
+  /** 长按判定时长（毫秒） */
+  longPressDelayMs?: number;
+}
+
+/** 默认长按判定时长 */
+const DEFAULT_LONG_PRESS_DELAY_MS = 500;
 
 /**
  * 拖动落地之后的「用户意图保护」窗口（毫秒）。
@@ -25,7 +42,10 @@ const SEEK_GUARD_MAX_RETRY = 4;
 const SEEK_GUARD_TOLERANCE = 1;
 
 /** Keep playback running while scrubbing; commit the selected time on release. */
-export function bindDeferredProgressSeek(art: Artplayer): () => void {
+export function bindDeferredProgressSeek(
+  art: Artplayer,
+  options: DeferredProgressSeekOptions = {}
+): () => void {
   const progress = art.template.$progress;
   const player = art.template.$player;
   const video = art.template.$video;
@@ -51,12 +71,19 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     id: number;
     x: number;
     y: number;
+    left: number;
     time: number;
     duration: number;
     size: number;
+    width: number;
+    height: number;
     rotated: boolean;
-    direction: 'pending' | 'seek' | 'ignore';
+    verticalAllowed: boolean;
+    side: 'left' | 'right' | null;
+    direction: 'pending' | 'seek' | 'vertical' | 'ignore';
   } | null = null;
+  let longPressTimer: number | null = null;
+  let longPressActive = false;
 
   const updateBar = (event?: Event) => {
     art.emit('setBar', 'played', ratio, event);
@@ -141,15 +168,55 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     commitSeek();
   };
 
+  const clearLongPressTimer = () => {
+    if (longPressTimer === null) return;
+    window.clearTimeout(longPressTimer);
+    longPressTimer = null;
+  };
+
+  /** 结束长按倍速；没有处于倍速时无副作用 */
+  const endLongPress = () => {
+    clearLongPressTimer();
+    if (!longPressActive) return;
+    longPressActive = false;
+    options.longPress?.end();
+  };
+
+  /** 手指保持不动达到阈值后进入倍速 */
+  const scheduleLongPress = () => {
+    clearLongPressTimer();
+    if (!options.longPress) return;
+    longPressTimer = window.setTimeout(() => {
+      longPressTimer = null;
+      // 已开始拖动 / 已锁定 / 手势已结束时不再进入倍速
+      if (!gesture || drag || art.isLock) return;
+      longPressActive = options.longPress?.start() ?? false;
+    }, options.longPressDelayMs ?? DEFAULT_LONG_PRESS_DELAY_MS);
+  };
+
   const finish = (commit: boolean, keepControls = true) => {
+    const wasLongPress = longPressActive;
+    endLongPress();
+    // 长按结束后浏览器仍可能补发 click，不能让它再切换播放/暂停
+    if (wasLongPress) suppressVideoClickUntil = Date.now() + 500;
+    const ended = gesture;
     gesture = null;
     if (!drag) return;
-    if (drag === 'gesture') suppressVideoClickUntil = Date.now() + 500;
+    const gestureDrag = drag === 'gesture';
+    if (gestureDrag) suppressVideoClickUntil = Date.now() + 500;
     drag = null;
     touchId = null;
-    // The show setter also restarts Artplayer's normal auto-hide countdown.
-    if (keepControls && !art.isLock) art.controls.show = true;
-    if (commit && !commitSeek()) {
+
+    const verticalGesture = gestureDrag && ended?.direction === 'vertical';
+    // 竖滑只调音量/亮度，不主动唤出底部控制栏（进度条）
+    if (!verticalGesture && keepControls && !art.isLock) {
+      // The show setter also restarts Artplayer's normal auto-hide countdown.
+      art.controls.show = true;
+    }
+    if (verticalGesture) {
+      // 垂直手势只调节音量 / 亮度，不能沿用进度比例去 seek
+      options.vertical?.end(!commit);
+    } else if (commit && !commitSeek()) {
       // 时长暂时不可用（hls.js flush 缓冲时 MediaSource 时长可能短暂失效）：
       // 记住目标进度等时长恢复后补做，而不是把进度条打回拖动前的位置
       pendingRatio = ratio;
@@ -158,6 +225,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     } else if (!commit) {
       art.emit('setBar', 'played', art.played);
     }
+
     progress.dispatchEvent(new CustomEvent(PROGRESS_PREVIEW_END));
   };
 
@@ -169,7 +237,6 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     }
     if (
       !art.option.gesture ||
-      art.option.isLive ||
       art.isLock ||
       drag ||
       event.touches.length !== 1
@@ -178,19 +245,38 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     }
     const duration = art.duration;
     const rect = player.getBoundingClientRect();
-    const size = art.isRotate ? rect.height : rect.width;
-    if (!Number.isFinite(duration) || duration <= 0 || size <= 0) return;
+    const width = rect.width;
+    const height = rect.height;
+    const size = art.isRotate ? height : width;
+    const hasDuration = Number.isFinite(duration) && duration > 0;
+    // 画面内竖滑在非全屏时可能是想滚动页面，只有全屏才接管音量 / 亮度
+    const verticalAllowed =
+      !!options.vertical &&
+      !art.isRotate &&
+      (art.fullscreen === true || art.fullscreenWeb === true);
+    // 长按倍速不依赖时长，直播 / 非全屏也可以使用
+    const longPressAllowed = !!options.longPress;
+    if ((!hasDuration && !verticalAllowed && !longPressAllowed) || size <= 0)
+      return;
+    if (width <= 0 || height <= 0) return;
     const touch = event.touches[0];
     gesture = {
       id: touch.identifier,
       x: touch.clientX,
       y: touch.clientY,
-      time: art.currentTime,
+      left: rect.left,
+      // 直播没有可 seek 的时长，垂直手势仍然可用
+      time: hasDuration ? art.currentTime : 0,
       duration,
       size,
+      width,
+      height,
       rotated: art.isRotate,
+      verticalAllowed,
+      side: null,
       direction: 'pending',
     };
+    scheduleLongPress();
   };
   const updateGesture = (touch: Touch, event: Event) => {
     if (!gesture || gesture.direction === 'ignore') return;
@@ -200,12 +286,59 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     const crossOffset = gesture.rotated ? dx : dy;
     if (gesture.direction === 'pending') {
       if (Math.max(Math.abs(offset), Math.abs(crossOffset)) < 10) return;
-      // Lock the axis once, so taps and perpendicular swipes never seek.
-      gesture.direction =
-        Math.abs(offset) >= Math.abs(crossOffset) ? 'seek' : 'ignore';
-      if (gesture.direction !== 'seek') return;
-      drag = 'gesture';
-      art.controls.show = true;
+      if (longPressActive) {
+        // 已经进入长按倍速：手指移动不影响倍速，松手时才恢复
+        return;
+      }
+      // 尚未触发长按时的滑动不进入倍速，取消待执行的判定
+      clearLongPressTimer();
+      // Lock the axis once. 轴向不明确时继续等待，避免竖滑调音量时
+      // 被手指的横向抖动误判成拖动进度、让进度条跳一下。
+      const primary = Math.abs(offset);
+      const cross = Math.abs(crossOffset);
+      const seekDominant = primary > cross * 1.5;
+      const verticalDominant = cross > primary * 1.5;
+      if (!seekDominant && !verticalDominant) return;
+
+      if (seekDominant) {
+        if (!Number.isFinite(gesture.duration) || gesture.duration <= 0) {
+          gesture.direction = 'ignore';
+          return;
+        }
+        gesture.direction = 'seek';
+        drag = 'gesture';
+        art.controls.show = true;
+      } else if (gesture.verticalAllowed) {
+        gesture.direction = 'vertical';
+        gesture.side =
+          touch.clientX - gesture.left < gesture.width / 2 ? 'left' : 'right';
+        drag = 'gesture';
+        const accepted = options.vertical?.start(gesture.side) ?? false;
+        if (!accepted) {
+          gesture.direction = 'ignore';
+          gesture.side = null;
+          drag = null;
+        }
+        return;
+      } else if (primary >= cross) {
+        // 非全屏没有音量/亮度手势时，保留原本的横向 seek 行为
+        if (!Number.isFinite(gesture.duration) || gesture.duration <= 0) {
+          gesture.direction = 'ignore';
+          return;
+        }
+        gesture.direction = 'seek';
+        drag = 'gesture';
+        art.controls.show = true;
+      } else {
+        gesture.direction = 'ignore';
+        return;
+      }
+    }
+    if (gesture.direction === 'vertical') {
+      // 向上为正：手指向上滑增大音量 / 亮度
+      const delta = -(touch.clientY - gesture.y) / gesture.height;
+      options.vertical?.move(delta);
+      return;
     }
     ratio = Math.min(
       1,
@@ -243,6 +376,15 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     event.stopImmediatePropagation();
     updatePosition(event.clientX, event.clientY, event);
     finish(true);
+  };
+  const onPlayerContextMenu = (event: Event) => {
+    // 长按手势进行中（或刚结束）禁止浏览器/播放器弹出右键菜单：
+    // Android Chrome 会在这里弹出「复制视频帧 / 画中画」等原生长按菜单。
+    if (!gesture && !longPressActive && Date.now() >= suppressVideoClickUntil) {
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
   };
   const onPlayerTouchStart = (event: TouchEvent) => {
     if (!art.fullscreen && !art.fullscreenWeb && !art.isRotate) return;
@@ -294,7 +436,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
         (item) => item.identifier === gesture?.id
       );
       if (touch) updateGesture(touch, event);
-      if (drag === 'gesture') event.preventDefault();
+      if (drag === 'gesture' || longPressActive) event.preventDefault();
       return;
     }
     if (drag !== 'touch') return;
@@ -325,7 +467,8 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
         finish(!art.isLock && art.isRotate === gesture.rotated);
         art.emit('document:touchend', event);
       } else {
-        gesture = null;
+        // 长按倍速期间没有发生拖动，松手时恢复原速并吞掉随后的 click
+        finish(false);
       }
       return;
     }
@@ -356,6 +499,8 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
   };
   const onSetBar = (type: string) => {
     if (type !== 'played' || !drag || restoringBar) return;
+    // 竖滑只调音量/亮度、长按只改倍速，不能让播放进度条跟随旧比例跳变
+    if (drag === 'gesture' && gesture?.direction !== 'seek') return;
     // RAF/timeupdate still advance normally, but the thumb follows the drag.
     restoringBar = true;
     art.emit('setBar', 'played', ratio);
@@ -366,6 +511,7 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
     if (!visible && drag && !art.isLock) art.controls.show = true;
   };
 
+  player.addEventListener('contextmenu', onPlayerContextMenu, true);
   player.addEventListener('touchstart', onPlayerTouchStart, {
     capture: true,
     passive: true,
@@ -399,9 +545,11 @@ export function bindDeferredProgressSeek(art: Artplayer): () => void {
   art.on('control', onControl);
 
   const cleanup = () => {
+    endLongPress();
     finish(false, false);
     committedSeek = null;
     pendingRatio = null;
+    player.removeEventListener('contextmenu', onPlayerContextMenu, true);
     player.removeEventListener('touchstart', onPlayerTouchStart, true);
     video.removeEventListener('touchstart', onGestureStart, true);
     video.removeEventListener('click', onVideoClick, true);
