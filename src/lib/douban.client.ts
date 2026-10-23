@@ -65,9 +65,7 @@ async function fetchWithTimeout(
   const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
 
   // 检查是否使用代理
-  const finalUrl = proxyUrl
-    ? `${proxyUrl}${encodeURIComponent(url)}`
-    : url;
+  const finalUrl = proxyUrl ? `${proxyUrl}${encodeURIComponent(url)}` : url;
 
   const fetchOptions: RequestInit = {
     signal: controller.signal,
@@ -512,15 +510,15 @@ export async function getDoubanCollection(
   const baseUrl = useTencentCDN
     ? `https://m.douban.cmliussss.net/rexxar/api/v2/subject_collection/${collectionId}/items`
     : useAliCDN
-      ? `https://m.douban.cmliussss.com/rexxar/api/v2/subject_collection/${collectionId}/items`
-      : `https://m.douban.com/rexxar/api/v2/subject_collection/${collectionId}/items`;
+    ? `https://m.douban.cmliussss.com/rexxar/api/v2/subject_collection/${collectionId}/items`
+    : `https://m.douban.com/rexxar/api/v2/subject_collection/${collectionId}/items`;
 
   const proxy =
     proxyType === 'cors-proxy-zwei'
       ? 'https://ciao-cors.is-an.org/'
       : proxyType === 'custom'
-        ? proxyUrl
-        : '';
+      ? proxyUrl
+      : '';
 
   try {
     const response = await fetchWithTimeout(
@@ -548,3 +546,102 @@ export async function getDoubanCollection(
   }
 }
 
+/**
+ * 豆瓣条目详情（剧情简介等）
+ */
+export interface DoubanSubjectDetail {
+  id: string;
+  title: string;
+  year: string;
+  rate: string;
+  intro: string;
+}
+
+interface DoubanSubjectApiResponse {
+  id?: string;
+  title?: string;
+  year?: string;
+  intro?: string;
+  rating?: { value?: number };
+}
+
+// 详情内存缓存，避免同一卡片多次打开菜单时重复请求
+const doubanDetailCache = new Map<string, DoubanSubjectDetail>();
+
+function normalizeDoubanSubjectDetail(
+  id: string,
+  data: DoubanSubjectApiResponse
+): DoubanSubjectDetail {
+  return {
+    id: data.id || id,
+    title: data.title || '',
+    year: data.year || '',
+    rate: data.rating?.value ? data.rating.value.toFixed(1) : '',
+    intro: data.intro || '',
+  };
+}
+
+/**
+ * 获取豆瓣条目详情（剧情简介）。
+ * 根据代理设置选择服务端接口或客户端代理，并做内存缓存。
+ */
+export async function getDoubanDetail(
+  id: string
+): Promise<DoubanSubjectDetail> {
+  const cached = doubanDetailCache.get(id);
+  if (cached) {
+    return cached;
+  }
+
+  const { proxyType, proxyUrl } = getDoubanProxyConfig();
+  const target = `https://m.douban.com/rexxar/api/v2/subject/${encodeURIComponent(
+    id
+  )}`;
+
+  let response: Response;
+  switch (proxyType) {
+    case 'cmliussss-cdn-tencent':
+      response = await fetchWithTimeout(
+        `https://m.douban.cmliussss.net/rexxar/api/v2/subject/${encodeURIComponent(
+          id
+        )}`,
+        ''
+      );
+      break;
+    case 'cmliussss-cdn-ali':
+      response = await fetchWithTimeout(
+        `https://m.douban.cmliussss.com/rexxar/api/v2/subject/${encodeURIComponent(
+          id
+        )}`,
+        ''
+      );
+      break;
+    case 'cors-proxy-zwei':
+      response = await fetchWithTimeout(target, 'https://ciao-cors.is-an.org/');
+      break;
+    case 'custom':
+      response = await fetchWithTimeout(target, proxyUrl);
+      break;
+    case 'direct':
+    default:
+      response = await fetch(
+        `/api/detail?provider=douban&id=${encodeURIComponent(id)}&fields=desc`
+      );
+      break;
+  }
+
+  if (!response.ok) {
+    throw new Error(`获取豆瓣详情失败: ${response.status}`);
+  }
+
+  // 直连模式返回 { desc }，代理模式返回豆瓣条目原始结构
+  const data = (await response.json()) as DoubanSubjectApiResponse & {
+    desc?: string;
+  };
+  const detail = normalizeDoubanSubjectDetail(id, data);
+  if (!detail.intro && typeof data.desc === 'string') {
+    detail.intro = data.desc;
+  }
+  doubanDetailCache.set(id, detail);
+  return detail;
+}
