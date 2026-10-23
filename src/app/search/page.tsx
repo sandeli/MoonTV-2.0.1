@@ -3,7 +3,14 @@
 
 import { ChevronUp, Search, X } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import { getSearchConcurrency } from '@/lib/concurrency';
 import {
@@ -497,6 +504,25 @@ function SearchPageClient() {
     }
   }, [currentQuery]);
 
+  // 统一的“清空筛选”逻辑：既供筛选面板的“清空筛选”按钮使用，
+  // 也用于切换查询时自动清理上一次搜索遗留的筛选条件。
+  const handleClearFilters = useCallback(() => {
+    setFilterSources([]);
+    setSelectedTitles([]);
+    setSelectedYears([]);
+    setOpenFilter(null);
+  }, []);
+
+  // 查询变化时清空上一次搜索遗留的结果筛选条件。
+  // 否则旧的来源/标题/年份筛选可能把新结果全部过滤掉，页面会误显示“未找到相关结果”。
+  // 首次渲染不触发，URL 中携带的筛选参数（分享链接）仍然生效。
+  const filterQueryRef = useRef<string | null>(currentQuery);
+  useEffect(() => {
+    if (filterQueryRef.current === currentQuery) return;
+    filterQueryRef.current = currentQuery;
+    handleClearFilters();
+  }, [currentQuery, handleClearFilters]);
+
   // 同步搜索源配置（当 sources 参数变化时）
   // 内容一致时保持原数组引用，避免多余的渲染与 URL 回写
   useEffect(() => {
@@ -759,6 +785,7 @@ function SearchPageClient() {
                   <FilterOptions
                     openFilter={openFilter}
                     setOpenFilter={setOpenFilter}
+                    onClearFilters={handleClearFilters}
                     sourceOptions={sourceOptions}
                     filterSources={filterSources}
                     setFilterSources={setFilterSources}

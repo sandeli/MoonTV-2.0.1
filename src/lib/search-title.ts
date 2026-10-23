@@ -52,14 +52,30 @@ export function getFallbackSearchQuery(query: string): string | null {
   return main && main !== original ? main : null;
 }
 
-/** Relevance depends only on main titles, not years embedded in annotations. */
+/**
+ * Relevance depends on main titles, but a query may also target a subtitle.
+ * e.g. 「黑铁的鱼影」 should match 「名侦探柯南：黑铁的鱼影」.
+ * Pure-year queries still never match year annotations.
+ */
 export function matchesSearchTitle(
   title: string,
   query: string,
   exact = false
 ): boolean {
   const mainQuery = normalizeTitle(getMainTitle(query) || query);
-  const mainTitle = normalizeTitle(getMainTitle(title) || title);
   if (!mainQuery) return false;
-  return exact ? mainTitle === mainQuery : mainTitle.includes(mainQuery);
+
+  const mainTitle = normalizeTitle(getMainTitle(title) || title);
+  const fullTitle = normalizeTitle(title);
+
+  if (exact) {
+    return mainTitle === mainQuery || fullTitle === mainQuery;
+  }
+
+  // 纯年份查询只按主标题判断，避免把「三体(2024)」里的年份当成片名匹配。
+  const isYearOnlyQuery = YEAR_FRAGMENT.test(normalizeTitle(query));
+  return (
+    mainTitle.includes(mainQuery) ||
+    (!isYearOnlyQuery && fullTitle.includes(mainQuery))
+  );
 }
