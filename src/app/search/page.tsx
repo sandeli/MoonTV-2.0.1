@@ -498,10 +498,16 @@ function SearchPageClient() {
   }, [currentQuery]);
 
   // 同步搜索源配置（当 sources 参数变化时）
+  // 内容一致时保持原数组引用，避免多余的渲染与 URL 回写
   useEffect(() => {
-    if (currentSources) {
-      setSearchSources(currentSources.split(','));
-    }
+    if (!currentSources) return;
+    const nextSources = currentSources.split(',');
+    setSearchSources((prev) =>
+      prev.length === nextSources.length &&
+      prev.every((source, index) => source === nextSources[index])
+        ? prev
+        : nextSources
+    );
   }, [currentSources]);
 
   // 监听查询参数 q 的变化并触发搜索（只在 q 变化时触发）
@@ -512,7 +518,6 @@ function SearchPageClient() {
       setIsLoading(true);
       setShowResults(true);
       fetchSearchResults(currentQuery);
-      addSearchHistory(currentQuery);
     } else {
       // 没有搜索参数时，聚焦输入框
       document.getElementById('searchInput')?.focus();
@@ -549,57 +554,46 @@ function SearchPageClient() {
   }, []);
 
   // 更新筛选状态到 URL
+  // 显式依赖所有参与序列化的状态，且写入前先比较当前 URL，
+  // 避免 replaceState 触发 searchParams 更新后反复执行。
   useEffect(() => {
-    const params = new URLSearchParams(searchParams);
+    if (!currentQuery) return;
 
+    const params = new URLSearchParams();
+    params.set('q', currentQuery);
     if (searchSources.length > 0) {
       params.set('sources', searchSources.join(','));
-    } else {
-      params.delete('sources');
     }
-
     if (filterSources.length > 0) {
       params.set('filter_sources', filterSources.join(','));
-    } else {
-      params.delete('filter_sources');
     }
-
     if (selectedTitles.length > 0) {
       params.set('titles', selectedTitles.join(','));
-    } else {
-      params.delete('titles');
     }
-
     if (selectedYears.length > 0) {
       params.set('years', selectedYears.join(','));
-    } else {
-      params.delete('years');
     }
-
-    // 排序字段与顺序
     if (sortField) {
       params.set('sort', sortField);
-    } else {
-      params.delete('sort');
     }
     if (sortOrder) {
       params.set('order', sortOrder);
-    } else {
-      params.delete('order');
     }
 
-    // 只在有搜索查询时才更新 URL
-    if (searchParams.get('q')) {
-      window.history.replaceState({}, '', `/search?${params.toString()}`);
+    const nextUrl = `/search?${params.toString()}`;
+    if (nextUrl === `${window.location.pathname}${window.location.search}`) {
+      return;
     }
+    window.history.replaceState({}, '', nextUrl);
   }, [
+    currentQuery,
+    searchSources,
     filterSources,
     selectedTitles,
     selectedYears,
     sortField,
     sortOrder,
-    searchParams,
-  ]); // 移除 selectedSources 依赖，避免选择搜索源时触发重新搜索
+  ]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -617,6 +611,8 @@ function SearchPageClient() {
     if (!trimmed) return;
 
     setShowSuggestions(false);
+    // 仅用户主动提交时写入搜索历史，避免前进/后退或直接打开链接污染历史
+    addSearchHistory(trimmed);
     // 更新URL，由useEffect监听触发搜索
     const urlParams = new URLSearchParams();
     urlParams.set('q', trimmed);
@@ -631,6 +627,7 @@ function SearchPageClient() {
 
   const handleSuggestionSelect = (suggestion: string) => {
     setShowSuggestions(false);
+    addSearchHistory(suggestion);
     // 更新URL，由useEffect监听触发搜索
     const urlParams = new URLSearchParams();
     urlParams.set('q', suggestion);

@@ -45,6 +45,18 @@ export async function GET(request: NextRequest) {
     searchParams.get('concurrency')
   );
 
+  if (!query) {
+    // 空查询无需读取配置，也无需创建流，明确不缓存
+    return new Response(JSON.stringify({ results: [] }), {
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        Pragma: 'no-cache',
+        Expires: '0',
+      },
+    });
+  }
+
   const config = await getConfig();
 
   // 获取用户可用的搜索源
@@ -56,41 +68,6 @@ export async function GET(request: NextRequest) {
     const selectedSources = selectedSourcesParam.split(',');
     apiSites = apiSites.filter((site) => selectedSources.includes(site.key));
   }
-
-  const encoder = new TextEncoder();
-  const { readable, writable } = new TransformStream();
-  const writer = writable.getWriter();
-
-  if (!query) {
-    // 空查询，明确不缓存
-    return new Response(JSON.stringify({ results: [] }), {
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-store, no-cache, must-revalidate',
-        Pragma: 'no-cache',
-        Expires: '0',
-      },
-    });
-  }
-
-  // 安全写入与断连处理
-  let shouldStop = false;
-  const abortSignal = (request as any).signal as AbortSignal | undefined;
-  abortSignal?.addEventListener('abort', () => {
-    shouldStop = true;
-    void writer.abort().catch(() => undefined);
-  });
-
-  const safeWrite = async (obj: unknown) => {
-    if (shouldStop || abortSignal?.aborted) return false;
-    try {
-      await writer.write(encoder.encode(JSON.stringify(obj) + '\n'));
-      return true;
-    } catch {
-      shouldStop = true;
-      return false;
-    }
-  };
 
   // -------------------------
   // 非流式：并发
@@ -179,6 +156,30 @@ export async function GET(request: NextRequest) {
   // -------------------------
   // 流式：并发
   // -------------------------
+  // 只有流式响应才需要创建 TransformStream 与 writer
+  const encoder = new TextEncoder();
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+
+  // 安全写入与断连处理
+  let shouldStop = false;
+  const abortSignal = (request as any).signal as AbortSignal | undefined;
+  abortSignal?.addEventListener('abort', () => {
+    shouldStop = true;
+    void writer.abort().catch(() => undefined);
+  });
+
+  const safeWrite = async (obj: unknown) => {
+    if (shouldStop || abortSignal?.aborted) return false;
+    try {
+      await writer.write(encoder.encode(JSON.stringify(obj) + '\n'));
+      return true;
+    } catch {
+      shouldStop = true;
+      return false;
+    }
+  };
+
   (async () => {
     const failedSources: { name: string; key: string; error: string }[] = [];
 
