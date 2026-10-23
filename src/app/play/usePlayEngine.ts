@@ -10,6 +10,7 @@ import {
   setSettingTooltip,
   updateSettingPreservingPanel,
 } from '@/lib/artplayer-setting';
+import { getSearchConcurrency } from '@/lib/concurrency';
 import {
   AnimeOption,
   extractEpisodeNumber,
@@ -1058,10 +1059,11 @@ export function usePlayEngine() {
       try {
         // 发起流式搜索请求
         const timeoutSeconds = getRequestTimeout();
+        const searchConcurrency = getSearchConcurrency();
         const response = await fetch(
           `/api/search?q=${encodeURIComponent(
             query.trim()
-          )}&timeout=${timeoutSeconds}&stream=1`
+          )}&timeout=${timeoutSeconds}&stream=1&concurrency=${searchConcurrency}`
         );
         if (!response.ok) throw new Error('搜索失败');
 
