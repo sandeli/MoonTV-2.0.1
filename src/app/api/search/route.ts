@@ -3,11 +3,26 @@
 import { NextRequest } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { getAvailableApiSites, getCacheTime, getConfig } from '@/lib/config';
+import { mapWithConcurrency } from '@/lib/concurrency';
+import {
+  ApiSite,
+  getAvailableApiSites,
+  getCacheTime,
+  getConfig,
+} from '@/lib/config';
 import { searchFromApiStream } from '@/lib/downstream';
 import { yellowWords } from '@/lib/yellow';
 
 export const runtime = 'edge';
+
+// 单个搜索请求同时查询的上游源数量上限，避免源多时打满上游限流或 Edge 连接数。
+// 可用 NEXT_PUBLIC_SEARCH_SOURCE_CONCURRENCY 覆盖，默认 6。
+const SEARCH_SOURCE_CONCURRENCY = (() => {
+  const configured = Number(process.env.NEXT_PUBLIC_SEARCH_SOURCE_CONCURRENCY);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.floor(configured)
+    : 6;
+})();
 
 export async function GET(request: NextRequest) {
   // 检查是否为本地存储模式
@@ -84,7 +99,7 @@ export async function GET(request: NextRequest) {
   // 非流式：并发
   // -------------------------
   if (!enableStream) {
-    const tasks = apiSites.map(async (site) => {
+    const searchSite = async (site: ApiSite) => {
       const siteResults: any[] = [];
       let hasResults = false;
       try {
@@ -132,9 +147,13 @@ export async function GET(request: NextRequest) {
           failed: { name: site.name, key: site.key, error: errorMessage },
         };
       }
-    });
+    };
 
-    const results = await Promise.all(tasks);
+    const results = await mapWithConcurrency(
+      apiSites,
+      SEARCH_SOURCE_CONCURRENCY,
+      searchSite
+    );
     const aggregatedResults = results.flatMap((r) => r.siteResults);
     const failedSources = results.filter((r) => r.failed).map((r) => r.failed);
 
@@ -164,10 +183,9 @@ export async function GET(request: NextRequest) {
   // 流式：并发
   // -------------------------
   (async () => {
-    const aggregatedResults: any[] = [];
     const failedSources: { name: string; key: string; error: string }[] = [];
 
-    const tasks = apiSites.map(async (site) => {
+    const searchSite = async (site: ApiSite) => {
       try {
         const generator = searchFromApiStream(
           site,
@@ -200,7 +218,6 @@ export async function GET(request: NextRequest) {
             return;
           }
 
-          aggregatedResults.push(...filteredResults);
           if (
             !(await safeWrite({ site: site.key, pageResults: filteredResults }))
           ) {
@@ -236,15 +253,14 @@ export async function GET(request: NextRequest) {
         });
         await safeWrite({ failedSources });
       }
-    });
+    };
 
-    // 等所有 site 跑完
-    await Promise.allSettled(tasks);
+    // 等所有 site 跑完（受并发上限约束）
+    await mapWithConcurrency(apiSites, SEARCH_SOURCE_CONCURRENCY, searchSite);
 
     if (failedSources.length > 0) {
       await safeWrite({ failedSources });
     }
-    await safeWrite({ aggregatedResults });
 
     try {
       await writer.close();
