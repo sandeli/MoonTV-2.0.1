@@ -641,12 +641,33 @@ export function createCustomHlsLoader(
         // ② 片段：缓存优先
         //    - 有效的 [rangeStart, rangeEnd) 使用独立缓存键，包含从 0 开始的区间。
         //      rangeEnd=0 / undefined 是 hls.js 的整文件哨兵，不应误判。
-        //    - 没有明确 type 时：用 URL 后缀/关键词启发式判断是不是视频/音频分片。
+        //    - 没有明确 type 时：优先用 hls.js 的 `context.frag` 判定，
+        //      URL 后缀/关键词只作为兜底启发式。
         const looksLikeFragment =
           /\.(ts|m4s|m4v|mp4|webm|aac|mp3)(\?|$)/i.test(url) ||
           /segment|fragment|clip|part|chunk|frag|plist/i.test(url);
+        /** 子播放列表 / 字幕等文本请求：即使 hls.js 塞了 frag 也不能当分片查询 */
+        const looksLikeTextResource = /\.(m3u8|m3u|vtt|webvtt)(\?|$)/i.test(
+          url
+        );
+        /**
+         * 分片判定。
+         *
+         * hls.js 1.6 的 `createLoaderContext()` 只给分片上下文塞
+         * `{ frag, part, responseType: 'arraybuffer', url, headers, rangeStart, rangeEnd }`，
+         * **没有 `type` 字段**（`type` 只出现在 manifest / level / track 等播放列表请求上），
+         * 所以 `type === 'fragment'` 实际永远不成立，过去全靠 URL 后缀猜。
+         *
+         * 采集站常把 TS 切片伪装成 `.jpeg` / `.jpg` / `.png`（响应头也是 image/jpeg，
+         * 内容仍是 TS），这类 URL 后缀猜不出来，于是缓存查询整段被跳过：
+         * 预取照常下载写入、播放却永远回源，命中率恒为 0。
+         * 因此以 `context.frag` 这个 hls.js 内部标志为主来判断。
+         */
         const treatAsFragment =
-          type === 'fragment' || (!type && looksLikeFragment);
+          !looksLikeTextResource &&
+          (type === 'fragment' ||
+            Boolean(context && context.frag) ||
+            (!type && looksLikeFragment));
         const range = normalizeByteRange(rangeStart, rangeEnd);
         const invalidRange = !range && (rangeStart > 0 || rangeEnd > 0);
 
