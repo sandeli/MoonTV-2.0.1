@@ -83,10 +83,13 @@ import {
   calculateSourceScore,
   createCustomHlsLoader,
   createDanmakuInitialConfig,
+  DANMAKU_DENSITY_LABELS,
   DANMAKU_VISIBLE_RESTORE_DELAY_MS,
   formatTime,
+  getDanmakuDensity,
   pickDanmakuSettings,
   saveDanmakuSettings,
+  setDanmakuDensity,
   SkipConfig,
 } from './play-utils';
 import { clearPlayerNotices, pushPlayerNotice } from './player-notice';
@@ -455,24 +458,33 @@ export function usePlayEngine() {
           danmukuPluginInstanceRef.current &&
           url !== lastDanmakuUrlRef.current
         ) {
+          const inst = danmukuPluginInstanceRef.current;
           console.log('动态更新弹幕源:', url);
-          danmukuPluginInstanceRef.current.config({ danmuku: url });
-          danmukuPluginInstanceRef.current.load();
+          inst.config({ danmuku: url });
+
+          // 切集时弹幕已隐藏，load() 内部会在远端返回后 reset 并写入新队列，
+          // 完成后再恢复可见性，因此这里不需要额外 reset（避免重复清屏卡顿）
+          inst
+            .load()
+            .then(() => {
+              if (lastDanmakuUrlRef.current === url) {
+                scheduleDanmakuVisibleRestore();
+              }
+            })
+            .catch((e: unknown) => {
+              console.error('加载弹幕失败:', e);
+              if (lastDanmakuUrlRef.current === url) {
+                // 加载失败时清空旧集弹幕再恢复，避免恢复后显示错误内容
+                try {
+                  inst.reset?.();
+                } catch (_) {
+                  // 忽略：插件版本差异
+                }
+                scheduleDanmakuVisibleRestore();
+              }
+            });
+
           lastDanmakuUrlRef.current = url;
-
-          if (pendingDanmakuVisibleRestoreRef.current !== null) {
-            const visible = pendingDanmakuVisibleRestoreRef.current;
-            if (danmakuVisibleRestoreTimerRef.current) {
-              clearTimeout(danmakuVisibleRestoreTimerRef.current);
-            }
-            danmakuVisibleRestoreTimerRef.current = setTimeout(() => {
-              danmakuConfigRef.current.visible = visible;
-              danmukuPluginInstanceRef.current?.config({ visible });
-              pendingDanmakuVisibleRestoreRef.current = null;
-              danmakuVisibleRestoreTimerRef.current = null;
-            }, DANMAKU_VISIBLE_RESTORE_DELAY_MS);
-          }
-
           setCurrentTooltip(matchedEpisode.episodeTitle);
         }
       } catch (e) {
@@ -666,6 +678,22 @@ export function usePlayEngine() {
     }
 
     const inst = danmukuPluginInstanceRef.current as any;
+
+    // 手动模式下切集不会自动加载新弹幕源，没有恢复时机：
+    // 保持原可见性，异步清空旧弹幕。reset() 可能遍历大量弹幕，
+    // 同步执行会让切集点击明显卡顿
+    if (!autoDanmakuEnabled) {
+      pendingDanmakuVisibleRestoreRef.current = null;
+      setTimeout(() => {
+        try {
+          danmukuPluginInstanceRef.current?.reset?.();
+        } catch (_) {
+          // ignore
+        }
+      }, 0);
+      return;
+    }
+
     const currentVisible =
       typeof inst?.visible === 'boolean'
         ? inst.visible
@@ -689,6 +717,23 @@ export function usePlayEngine() {
     } catch (_) {
       // ignore
     }
+  };
+
+  /** 恢复切集时临时隐藏的弹幕（延迟执行，避免遮挡加载提示） */
+  const scheduleDanmakuVisibleRestore = () => {
+    if (pendingDanmakuVisibleRestoreRef.current === null) return;
+    const visible = pendingDanmakuVisibleRestoreRef.current;
+
+    if (danmakuVisibleRestoreTimerRef.current) {
+      clearTimeout(danmakuVisibleRestoreTimerRef.current);
+    }
+
+    danmakuVisibleRestoreTimerRef.current = setTimeout(() => {
+      danmakuConfigRef.current.visible = visible;
+      danmukuPluginInstanceRef.current?.config({ visible });
+      pendingDanmakuVisibleRestoreRef.current = null;
+      danmakuVisibleRestoreTimerRef.current = null;
+    }, DANMAKU_VISIBLE_RESTORE_DELAY_MS);
   };
 
   // -----------------------------------------------------------------------------
@@ -1273,10 +1318,14 @@ export function usePlayEngine() {
   // 视频初始化后即可匹配弹幕
   useEffect(() => {
     if (isDanmakuPluginReady && isBlockAdChanged) {
-      danmukuPluginInstanceRef.current.config({
-        danmuku: lastDanmakuUrlRef.current,
-      });
-      danmukuPluginInstanceRef.current.load();
+      // 没有弹幕源时不要调用 load()：空地址会发起一次必然失败的请求
+      const url = lastDanmakuUrlRef.current;
+      if (url) {
+        danmukuPluginInstanceRef.current.config({ danmuku: url });
+        danmukuPluginInstanceRef.current.load().catch((e: unknown) => {
+          console.error('加载弹幕失败:', e);
+        });
+      }
       setIsBlockAdChanged(false);
       return;
     }
@@ -1368,6 +1417,8 @@ export function usePlayEngine() {
           '自动加载弹幕失败，请手动选择弹幕源',
           { key: 'danmaku-auto-load-failed', durationMs: 8000 }
         );
+        // 匹配失败也要恢复切集时隐藏的弹幕，避免一直不可见
+        scheduleDanmakuVisibleRestore();
       }
       if (!abortController.signal.aborted) {
         setIsDanmakuLoading(false);
@@ -2643,6 +2694,25 @@ export function usePlayEngine() {
             tooltip: currentTooltip || '未选择',
             onClick: function () {
               setShowDanmakuSelector(true);
+            },
+          },
+          {
+            name: '弹幕密度',
+            html: '弹幕密度',
+            tooltip: DANMAKU_DENSITY_LABELS[getDanmakuDensity()],
+            selector: (['sparse', 'normal', 'dense'] as const).map(
+              (density) => ({
+                html: DANMAKU_DENSITY_LABELS[density],
+                value: density,
+                default: density === getDanmakuDensity(),
+              })
+            ),
+            onSelect: function (item: any) {
+              // 密度门控在弹幕上屏前读取当前挡位，切换后立即生效，
+              // 无需重新加载弹幕源
+              const density = setDanmakuDensity(item.value);
+              saveDanmakuSettings({ density });
+              return DANMAKU_DENSITY_LABELS[density];
             },
           },
           {
