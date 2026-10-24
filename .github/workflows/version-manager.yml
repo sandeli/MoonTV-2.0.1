@@ -38,7 +38,15 @@ jobs:
         with:
           node-version: '22'
 
-      # 脚本仅使用 Node 内置模块，无需安装依赖
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      # 同步脚本使用项目内的 Prettier 格式化生成文件，需要安装依赖
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Sync version files from CHANGELOG
         run: node scripts/convert-changelog.js
 

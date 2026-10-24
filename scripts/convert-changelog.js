@@ -86,31 +86,37 @@ function parseChangelog(content) {
   return { versions };
 }
 
+// 生成单引号字符串字面量，转义反斜杠与单引号，避免生成非法 TypeScript
+function toTsStringLiteral(value) {
+  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
+// 按 Prettier 的默认风格输出数组内容（6 空格缩进 + 尾逗号），
+// 保证生成结果与 lint-staged 格式化后的内容完全一致
+function formatEntries(entries, emptyComment) {
+  if (entries.length === 0) {
+    return `      ${emptyComment}`;
+  }
+
+  return entries
+    .map((entry) => `      ${toTsStringLiteral(entry)},`)
+    .join('\n');
+}
+
 function generateTypeScript(changelogData) {
   const entries = changelogData.versions
     .map((version) => {
-      // 使用 JSON.stringify 转义引号与反斜杠，避免生成非法的 TypeScript 字面量
-      const addedEntries = version.added
-        .map((entry) => `    ${JSON.stringify(entry)}`)
-        .join(',\n');
-      const changedEntries = version.changed
-        .map((entry) => `    ${JSON.stringify(entry)}`)
-        .join(',\n');
-      const fixedEntries = version.fixed
-        .map((entry) => `    ${JSON.stringify(entry)}`)
-        .join(',\n');
-
       return `  {
-    version: "${version.version}",
-    date: "${version.date}",
+    version: '${version.version}',
+    date: '${version.date}',
     added: [
-${addedEntries || '      // 无新增内容'}
+${formatEntries(version.added, '// 无新增内容')}
     ],
     changed: [
-${changedEntries || '      // 无变更内容'}
+${formatEntries(version.changed, '// 无变更内容')}
     ],
     fixed: [
-${fixedEntries || '      // 无修复内容'}
+${formatEntries(version.fixed, '// 无修复内容')}
     ]
   }`;
     })
@@ -247,7 +253,35 @@ function verifyVersionFiles(latestVersion, expectedChangelogTs) {
   console.log(`✅ 版本文件已同步: ${latestVersion}`);
 }
 
-function main() {
+// 使用项目自身的 Prettier 配置格式化生成结果，
+// 避免与 lint-staged 的格式化步骤互相覆盖导致每次提交都产生大 diff
+async function formatWithPrettier(source, filePath) {
+  let prettier;
+  try {
+    prettier = require('prettier');
+  } catch (error) {
+    console.error(
+      '❌ 未找到 prettier，无法格式化生成文件，请先安装依赖（pnpm install）'
+    );
+    process.exit(1);
+  }
+
+  const config = (await prettier.resolveConfig(filePath)) || {};
+  const formatted = await prettier.format(source, {
+    ...config,
+    filepath: filePath,
+    // 仅从 .husky 搜索插件，避开 prettier-plugin-tailwindcss 的 ESM 兼容问题
+    pluginSearchDirs: [path.join(process.cwd(), '.husky')],
+  });
+
+  if (typeof formatted !== 'string') {
+    throw new Error('Prettier 未返回格式化后的字符串');
+  }
+
+  return formatted;
+}
+
+async function main() {
   const args = process.argv.slice(2);
   const checkOnly = args.includes('--check');
   const skipVersion = args.includes('--no-version');
@@ -272,7 +306,10 @@ function main() {
     console.log(`🔢 最新版本: ${latestVersion}`);
 
     console.log('正在生成 TypeScript 文件...');
-    const tsContent = generateTypeScript(changelogData);
+    const tsContent = await formatWithPrettier(
+      generateTypeScript(changelogData),
+      outputPath
+    );
 
     if (checkOnly) {
       // 校验模式：只检查，不写入任何文件
@@ -319,5 +356,8 @@ function main() {
 }
 
 if (require.main === module) {
-  main();
+  main().catch((error) => {
+    console.error('❌ 转换失败:', error);
+    process.exit(1);
+  });
 }
