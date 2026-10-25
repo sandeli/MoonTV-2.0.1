@@ -1850,7 +1850,8 @@ export function usePlayEngine() {
     }
 
     // 空格 = 播放/暂停
-    if (e.key === ' ') {
+    // 用 e.code 判定，避免中文输入法等场景下 e.key 不是 ' ' 导致失效
+    if (e.code === 'Space' || e.key === ' ') {
       if (artPlayerRef.current) {
         artPlayerRef.current.toggle();
         e.preventDefault();
@@ -2497,8 +2498,10 @@ export function usePlayEngine() {
         airplay: true,
         theme: '#22c55e',
         lang: 'zh-cn',
-        // 桌面端启用 Artplayer 内置快捷键：空格播放/暂停、方向键快进/音量
-        hotkey: true,
+        // 关闭 Artplayer 内置快捷键：空格/方向键/F 已由全局 handleKeyboardShortcuts 接管。
+        // 若同时开启，播放器获得焦点后两个监听器都会执行，空格会被 toggle 两次
+        // （播放→暂停→播放），表现为「空格无法控制播放」。
+        hotkey: false,
         // 长按倍速由 mobile-gestures 统一接管，避免与内置 fastForward 叠加
         fastForward: false,
         autoOrientation: true,
